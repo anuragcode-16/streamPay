@@ -11,13 +11,19 @@ interface AuthContextType {
   profile: { display_name: string; email: string } | null;
   loading: boolean;
   signUp: (email: string, password: string, role: "merchant" | "customer", displayName: string) => Promise<{ error: any }>;
-  signIn: (email: string, password: string) => Promise<{ error: any }>;
+  signIn: (email: string, password: string) => Promise<{ data: any; error: any }>;
   signOut: () => Promise<void>;
 }
 
-const AuthContext = createContext<AuthContextType>({} as AuthContextType);
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export const useAuth = () => useContext(AuthContext);
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+};
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -26,6 +32,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [profile, setProfile] = useState<{ display_name: string; email: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
+  useEffect(() => {
+    console.log("AuthProvider mounted");
+  }, []);
+
   const fetchUserData = async (userId: string) => {
     // Fetch role
     const { data: roleData } = await supabase
@@ -33,7 +43,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       .select("role")
       .eq("user_id", userId)
       .maybeSingle();
-    
+
     if (roleData) {
       setRole((roleData as any).role as UserRole);
     }
@@ -55,8 +65,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       async (_event, session) => {
         setSession(session);
         setUser(session?.user ?? null);
-        
+
         if (session?.user) {
+          // IMMEDIATE FIX: Set role/profile from metadata to avoid DB race conditions
+          // or missing tables blocking access
+          const metadata = session.user.user_metadata;
+          if (metadata?.role) setRole(metadata.role as UserRole);
+          if (metadata?.display_name || metadata?.name) {
+            setProfile({
+              display_name: metadata.display_name || metadata.name,
+              email: session.user.email || ""
+            });
+          }
+
           // Use setTimeout to avoid Supabase auth deadlock
           setTimeout(() => fetchUserData(session.user.id), 0);
         } else {
@@ -71,6 +92,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
+        // IMMEDIATE FIX: Set role/profile from metadata
+        const metadata = session.user.user_metadata;
+        if (metadata?.role) setRole(metadata.role as UserRole);
+        if (metadata?.display_name || metadata?.name) {
+          setProfile({
+            display_name: metadata.display_name || metadata.name,
+            email: session.user.email || ""
+          });
+        }
+
         fetchUserData(session.user.id);
       }
       setLoading(false);
@@ -92,8 +123,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return { error };
+    const result = await supabase.auth.signInWithPassword({ email, password });
+    return result;
   };
 
   const signOut = async () => {

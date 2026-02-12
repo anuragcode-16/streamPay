@@ -40,11 +40,15 @@ const AuthPage = () => {
           navigate(selectedRole === "merchant" ? "/merchant" : "/customer");
         }
       } else {
-        const { error } = await signIn(email, password);
+        const { data, error } = await signIn(email, password);
         if (error) {
           toast({ title: "Sign in failed", description: error.message, variant: "destructive" });
+        } else if (data.user) {
+          // Immediate redirection based on metadata
+          const role = data.user.user_metadata?.role || "customer";
+          toast({ title: "Welcome back!", description: "Signed in successfully." });
+          navigate(role === "merchant" ? "/merchant" : "/customer");
         }
-        // onAuthStateChange will handle navigation via role detection
       }
     } catch (err: any) {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -93,22 +97,20 @@ const AuthPage = () => {
           <div className="mt-6 flex overflow-hidden rounded-xl bg-muted p-1">
             <button
               onClick={() => setSelectedRole("customer")}
-              className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-all ${
-                selectedRole === "customer"
-                  ? "bg-primary text-primary-foreground shadow-lg"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-all ${selectedRole === "customer"
+                ? "bg-primary text-primary-foreground shadow-lg"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               <User className="h-4 w-4" />
               Customer
             </button>
             <button
               onClick={() => setSelectedRole("merchant")}
-              className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-all ${
-                selectedRole === "merchant"
-                  ? "bg-primary text-primary-foreground shadow-lg"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-sm font-medium transition-all ${selectedRole === "merchant"
+                ? "bg-primary text-primary-foreground shadow-lg"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               <Building2 className="h-4 w-4" />
               Merchant

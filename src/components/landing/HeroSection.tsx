@@ -1,7 +1,10 @@
 import { ArrowRight } from "lucide-react";
 import GradualBlur from "../ui/GradualBlur";
 
+import { useNavigate } from "react-router-dom";
+
 export default function HeroSection() {
+  const navigate = useNavigate();
   return (
     <div className="min-h-screen pt-32 pb-20 relative overflow-hidden">
       {/* Background gradients */}
@@ -36,7 +39,10 @@ export default function HeroSection() {
               <span className="text-2xl">Superfluid</span>
             </button>
 
-            <button className="px-8 py-4 border border-theme-pink/30 flex items-center sm:text-lg font-bold rounded-full glass hover:bg-theme-pink/10 hover:border-theme-pink text-white transition-all duration-300 group">
+            <button
+              onClick={() => navigate("/auth")}
+              className="px-8 py-4 border border-theme-pink/30 flex items-center sm:text-lg font-bold rounded-full glass hover:bg-theme-pink/10 hover:border-theme-pink text-white transition-all duration-300 group"
+            >
               Discover More <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform" />
             </button>
           </div>
