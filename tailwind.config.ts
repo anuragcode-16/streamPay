@@ -64,6 +64,10 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        "theme-black": "#000000",
+        "theme-gray": "#121212",
+        "theme-pink": "#FFB6C1",
+        "theme-pink-glow": "#FF69B4",
       },
       borderRadius: {
         lg: "var(--radius)",

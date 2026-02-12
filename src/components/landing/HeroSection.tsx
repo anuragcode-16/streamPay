@@ -1,116 +1,70 @@
-import { motion } from "framer-motion";
-import { Link } from "react-router-dom";
-import { Zap, ArrowRight } from "lucide-react";
-import heroBg from "@/assets/hero-bg.jpg";
+import { ArrowRight } from "lucide-react";
+import GradualBlur from "../ui/GradualBlur";
 
-const HeroSection = () => {
+export default function HeroSection() {
   return (
-    <section className="relative flex min-h-screen items-center justify-center overflow-hidden pt-20">
-      {/* Background */}
-      <div className="absolute inset-0 z-0">
-        <img src={heroBg} alt="" className="h-full w-full object-cover opacity-30" />
-        <div className="absolute inset-0 bg-gradient-to-b from-background/80 via-background/50 to-background" />
+    <div className="min-h-screen pt-32 pb-20 relative overflow-hidden">
+      {/* Background gradients */}
+      {/* Background gradients and Grid */}
+      <div className="absolute top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-theme-pink/20 rounded-full blur-[100px]" />
+        <div className="absolute bottom-[10%] right-[-5%] w-[30%] h-[30%] bg-theme-pink-glow/20 rounded-full blur-[100px]" />
+
+        {/* Bottom glow to make blur visible */}
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[60%] h-[200px] bg-theme-pink/10 rounded-full blur-[80px] opacity-60"></div>
+
+        {/* Animated Grid Pattern */}
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
+        <div className="absolute left-0 right-0 top-0 -z-10 m-auto h-[310px] w-[310px] rounded-full bg-theme-pink opacity-20 blur-[100px]"></div>
       </div>
 
-      {/* Grid overlay */}
-      <div
-        className="absolute inset-0 z-0 opacity-[0.03]"
-        style={{
-          backgroundImage: "linear-gradient(hsl(var(--foreground)) 1px, transparent 1px), linear-gradient(90deg, hsl(var(--foreground)) 1px, transparent 1px)",
-          backgroundSize: "60px 60px",
-        }}
+      <div className="flex w-full flex-wrap xl:flex-nowrap container mx-auto justify-between py-[2rem] z-10 relative">
+        <div className="flex sm:mt-10 flex-col text-left px-2 sm:px-6 lg:w-1/2">
+          <h1 className="text-[55px] sm:text-[80px] font-bold leading-none text-white tracking-tighter">
+            Real-time <span className="text-transparent bg-clip-text bg-gradient-to-r from-theme-pink to-theme-pink-glow">Money Streaming.</span>
+          </h1>
+
+          <h1 className="text-2xl font-semibold flex flex-col my-6 text-gray-300">
+            Introduction: Understanding the Concept
+          </h1>
+          <p className="max-w-lg text-gray-400 text-lg leading-relaxed">
+            Imagine walking into a gym, scanning a QR code, working out for exactly 30 minutes, and paying only for those 30 minutes. This is the core idea behind StreamPay, a revolutionary payment system that transforms how we pay for utilities and services in our daily lives.
+          </p>
+          <div className="flex items-center flex-wrap gap-6 mt-10">
+            <button className="flex flex-col justify-start text-lg font-bold rounded text-white hover:text-theme-pink transition-colors">
+              <span className="text-sm text-gray-500 uppercase tracking-widest mb-1">Powered By</span>
+              <span className="text-2xl">Superfluid</span>
+            </button>
+
+            <button className="px-8 py-4 border border-theme-pink/30 flex items-center sm:text-lg font-bold rounded-full glass hover:bg-theme-pink/10 hover:border-theme-pink text-white transition-all duration-300 group">
+              Discover More <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform" />
+            </button>
+          </div>
+        </div>
+
+        {/* Right side image/graphic */}
+        <div className="relative mt-10 xl:mt-0 xl:absolute xl:top-0 xl:right-0 w-full xl:w-1/2 h-[500px] xl:h-[800px] flex items-center justify-center">
+          {/* Abstract shape representing the image */}
+          <div className="relative w-full h-full">
+            <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-[300px] h-[300px] sm:w-[500px] sm:h-[500px] bg-gradient-to-tr from-theme-pink to-purple-600 rounded-full blur-[60px] opacity-40 animate-pulse"></div>
+            <img
+              src="https://placehold.co/800x1000/000000/FFFFFF/png?text=StreamPay+App"
+              className="object-contain w-full h-full relative z-10 mix-blend-screen opacity-80"
+              alt="StreamPay App"
+            />
+          </div>
+        </div>
+      </div>
+      <GradualBlur
+        target="parent"
+        position="bottom"
+        height="7rem"
+        strength={2}
+        divCount={5}
+        curve="bezier"
+        exponential
+        opacity={1}
       />
-
-      <div className="container relative z-10 mx-auto px-6 text-center">
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.2 }}
-        >
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-primary/30 bg-primary/10 px-4 py-1.5">
-            <span className="pulse-dot h-2 w-2 rounded-full bg-primary" />
-            <span className="text-sm font-medium text-primary">Real-Time Money Streaming</span>
-          </div>
-        </motion.div>
-
-        <motion.h1
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.4 }}
-          className="mx-auto max-w-4xl font-display text-5xl font-bold leading-tight tracking-tight md:text-7xl"
-        >
-          Pay Only For{" "}
-          <span className="text-gradient">What You Use</span>
-          <br />
-          <span className="text-muted-foreground">Second by Second</span>
-        </motion.h1>
-
-        <motion.p
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.6 }}
-          className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground"
-        >
-          Pulse Pay transforms static payments into continuous streams. 
-          Scan a QR, use any service, and pay precisely for the time you consume. 
-          No subscriptions. No overpaying. Just fair pricing.
-        </motion.p>
-
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.8 }}
-          className="mt-10 flex flex-col items-center justify-center gap-4 sm:flex-row"
-        >
-          <Link
-            to="/auth?mode=signup&role=customer"
-            className="group flex items-center gap-2 rounded-xl bg-primary px-8 py-4 font-display text-lg font-bold text-primary-foreground transition-all hover:shadow-xl hover:shadow-primary/25"
-          >
-            <Zap className="h-5 w-5" />
-            Start Streaming
-            <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
-          </Link>
-          <Link
-            to="/auth?mode=signup&role=merchant"
-            className="flex items-center gap-2 rounded-xl border border-border bg-secondary px-8 py-4 font-display text-lg font-medium text-secondary-foreground transition-all hover:border-primary/40 hover:bg-surface-hover"
-          >
-            I'm a Merchant
-          </Link>
-        </motion.div>
-
-        {/* Live stream demo */}
-        <motion.div
-          initial={{ opacity: 0, y: 40 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 1, delay: 1.2 }}
-          className="mx-auto mt-16 max-w-md"
-        >
-          <div className="glass rounded-2xl p-6 neon-border">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-sm text-muted-foreground">Live Stream Demo</span>
-              <span className="flex items-center gap-1.5 text-sm text-primary">
-                <span className="pulse-dot h-2 w-2 rounded-full bg-primary" />
-                Active
-              </span>
-            </div>
-            <div className="h-1 w-full overflow-hidden rounded-full bg-muted mb-4">
-              <div className="stream-line h-full w-full rounded-full" />
-            </div>
-            <div className="flex items-end justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground">Streaming to</p>
-                <p className="font-display font-semibold text-foreground">FitZone Gym</p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs text-muted-foreground">Rate</p>
-                <p className="font-display text-2xl font-bold text-gradient">₹2/min</p>
-              </div>
-            </div>
-          </div>
-        </motion.div>
-      </div>
-    </section>
+    </div>
   );
-};
-
-export default HeroSection;
+}
