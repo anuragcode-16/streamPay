@@ -25,7 +25,7 @@ export interface StreamInfo {
 }
 
 export class SuperfluidService {
-  private provider: ethers.BrowserProvider | null = null;
+  private provider: ethers.providers.Web3Provider | null = null;
   private signer: ethers.Signer | null = null;
 
   async connect(): Promise<string> {
@@ -33,8 +33,8 @@ export class SuperfluidService {
       throw new Error("Please install MetaMask or another Web3 wallet");
     }
 
-    this.provider = new ethers.BrowserProvider((window as any).ethereum);
-    
+    this.provider = new ethers.providers.Web3Provider((window as any).ethereum);
+
     // Request Polygon Amoy testnet
     try {
       await (window as any).ethereum.request({
@@ -56,7 +56,7 @@ export class SuperfluidService {
       }
     }
 
-    this.signer = await this.provider.getSigner();
+    this.signer = this.provider.getSigner();
     return await this.signer.getAddress();
   }
 
@@ -65,17 +65,17 @@ export class SuperfluidService {
     const address = await this.signer.getAddress();
     const token = new ethers.Contract(fDAIx_ADDRESS, ERC20_ABI, this.provider);
     const balance = await token.balanceOf(address);
-    return ethers.formatEther(balance);
+    return ethers.utils.formatEther(balance);
   }
 
   async startStream(receiverAddress: string, flowRatePerSecond: string): Promise<string> {
     if (!this.signer) throw new Error("Not connected");
-    
+
     const cfa = new ethers.Contract(CFAV1_ADDRESS, CFA_ABI, this.signer);
     const tx = await cfa.createFlow(
       fDAIx_ADDRESS,
       receiverAddress,
-      ethers.parseUnits(flowRatePerSecond, 0), // flow rate in wei/sec
+      ethers.utils.parseUnits(flowRatePerSecond, 0), // flow rate in wei/sec
       "0x"
     );
     const receipt = await tx.wait();
@@ -85,7 +85,7 @@ export class SuperfluidService {
   async stopStream(receiverAddress: string): Promise<string> {
     if (!this.signer) throw new Error("Not connected");
     const senderAddress = await this.signer.getAddress();
-    
+
     const cfa = new ethers.Contract(CFAV1_ADDRESS, CFA_ABI, this.signer);
     const tx = await cfa.deleteFlow(
       fDAIx_ADDRESS,
@@ -108,7 +108,7 @@ export class SuperfluidService {
     return { timestamp, flowRate, deposit, owedDeposit };
   }
 
-  getAddress(): Promise<string> {
+  async getAddress(): Promise<string> {
     if (!this.signer) throw new Error("Not connected");
     return this.signer.getAddress();
   }
