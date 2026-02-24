@@ -1,329 +1,550 @@
-import { useState, useEffect } from "react";
+/**
+ * MerchantDashboard.tsx — Full Merchant View
+ *
+ * Tabs:
+ *   overview  — stats + live sessions
+ *   sessions  — all live sessions with customer info
+ *   services  — manage services + generate QR per service
+ *   ads       — advertisement manager (create/list)
+ *   qr        — QR codes for the default merchant
+ *   payments  — payment history
+ *
+ * Socket events:
+ *   session:start, session:update, session:paused, session:stop, payment:success
+ */
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
+import { io, Socket } from "socket.io-client";
+import QRCode from "react-qr-code";
 import {
-  Zap, BarChart3, Users, DollarSign, Settings, LogOut,
-  TrendingUp, Clock, MapPin, QrCode, Plus, Activity
+  Zap, BarChart3, Activity, Settings, LogOut, DollarSign, Plus,
+  QrCode, Loader2, CheckCircle2, PauseCircle, AlertTriangle,
+  Users, Megaphone, Wrench, X,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 
-const MerchantDashboard = () => {
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const DEMO_MERCHANT_ID = "m_demo_gym001";
+const DEMO_SERVICE_TYPE = "gym";
+const VALID_TYPES = ["gym", "ev", "parking", "coworking", "wifi", "spa", "vending"];
+
+function pad(n: number) { return String(n).padStart(2, "0"); }
+function fmt(sec: number) { return `${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`; }
+function formatPaise(p: number) { return `₹${(p / 100).toFixed(2)}`; }
+
+interface LiveSession {
+  sessionId: string; userId: string; merchantId: string;
+  merchantName: string; serviceType: string; startedAt: string;
+  pricePerMinutePaise: number; elapsedSec: number;
+  totalDebitedPaise: number; status: "active" | "paused_low_balance" | "stopped" | "paid";
+  paymentId?: string;
+}
+
+interface Payment { sessionId: string; paymentId: string; amountPaise: number; method: string; receivedAt: string; }
+interface MerchantService { id: string; service_type: string; price_per_minute_paise: number; description: string; }
+interface Ad { id: string; title: string; body: string; image_url: string; active: boolean; }
+
+export default function MerchantDashboard() {
   const navigate = useNavigate();
   const { profile, signOut } = useAuth();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("overview");
-  const [locations, setLocations] = useState<any[]>([]);
-  const [streams, setStreams] = useState<any[]>([]);
-  const [showAddLocation, setShowAddLocation] = useState(false);
-  const [newLocation, setNewLocation] = useState({ name: "", address: "", per_minute_rate: "2" });
 
+  const [tab, setTab] = useState("overview");
+  const [merchantId, setMerchantId] = useState(DEMO_MERCHANT_ID);
+  const [liveSessions, setLiveSessions] = useState<Map<string, LiveSession>>(new Map());
+  const [payments, setPayments] = useState<Payment[]>([]);
+  const [services, setServices] = useState<MerchantService[]>([]);
+  const [ads, setAds] = useState<Ad[]>([]);
+  const [qrPayloads, setQrPayloads] = useState<{ start: string; stop: string }>({
+    start: btoa(JSON.stringify({ merchantId: DEMO_MERCHANT_ID, serviceType: DEMO_SERVICE_TYPE, action: "start" })),
+    stop: btoa(JSON.stringify({ merchantId: DEMO_MERCHANT_ID, serviceType: DEMO_SERVICE_TYPE, action: "stop" })),
+  });
+
+  // Create Merchant form
+  const [showCreate, setShowCreate] = useState(false);
+  const [cf, setCf] = useState({ name: "", serviceType: "gym", pricePerMinute: "2", location: "", lat: "", lng: "" });
+  const [creating, setCreating] = useState(false);
+
+  // Add Service form
+  const [showAddService, setShowAddService] = useState(false);
+  const [sf, setSf] = useState({ serviceType: "gym", pricePerMinute: "2", description: "" });
+  const [addingSvc, setAddingSvc] = useState(false);
+  const [svcQr, setSvcQr] = useState<{ start: string; stop: string } | null>(null);
+
+  // Ad form
+  const [showAddAd, setShowAddAd] = useState(false);
+  const [af, setAf] = useState({ title: "", body: "", imageUrl: "" });
+  const [addingAd, setAddingAd] = useState(false);
+
+  const socketRef = useRef<Socket | null>(null);
+
+  const sessions = Array.from(liveSessions.values());
+  const activeSessions = sessions.filter(s => s.status === "active");
+  const totalRevenuePaise = payments.reduce((acc, p) => acc + p.amountPaise, 0);
+
+  // ── Socket.IO ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    fetchLocations();
-    fetchStreams();
+    const socket = io(API_URL, { transports: ["websocket", "polling"] });
+    socketRef.current = socket;
+    socket.on("connect", () => socket.emit("join:merchant", merchantId));
 
-    // Realtime subscription for payment streams
-    const channel = supabase
-      .channel("merchant-streams")
-      .on("postgres_changes", { event: "*", schema: "public", table: "payment_streams" }, () => {
-        fetchStreams();
-      })
-      .subscribe();
+    socket.on("session:start", (data: any) => {
+      setLiveSessions(prev => new Map(prev).set(data.sessionId, { ...data, elapsedSec: 0, totalDebitedPaise: 0, status: "active" }));
+      toast({ title: "🟢 New Session!", description: `User ${data.userId?.slice(0, 8)}… started ${data.serviceType}` });
+    });
 
-    return () => { supabase.removeChannel(channel); };
-  }, []);
+    socket.on("session:update", ({ sessionId, elapsedSec, totalDebitedPaise }: any) => {
+      setLiveSessions(prev => {
+        const m = new Map(prev);
+        const s = m.get(sessionId);
+        if (s) m.set(sessionId, { ...s, elapsedSec, totalDebitedPaise, status: "active" });
+        return m;
+      });
+    });
 
-  const fetchLocations = async () => {
-    const { data } = await supabase.from("merchant_locations" as any).select("*");
-    if (data) setLocations(data as any[]);
+    socket.on("session:paused", ({ sessionId }: any) => {
+      setLiveSessions(prev => {
+        const m = new Map(prev); const s = m.get(sessionId);
+        if (s) m.set(sessionId, { ...s, status: "paused_low_balance" });
+        return m;
+      });
+    });
+
+    socket.on("session:stop", ({ sessionId }: any) => {
+      setLiveSessions(prev => {
+        const m = new Map(prev); const s = m.get(sessionId);
+        if (s) m.set(sessionId, { ...s, status: "stopped" });
+        return m;
+      });
+    });
+
+    socket.on("payment:success", ({ sessionId, paymentId, amountPaise, method }: any) => {
+      setLiveSessions(prev => {
+        const m = new Map(prev); const s = m.get(sessionId);
+        if (s) m.set(sessionId, { ...s, status: "paid", paymentId });
+        return m;
+      });
+      setPayments(prev => [{ sessionId, paymentId, amountPaise, method, receivedAt: new Date().toISOString() }, ...prev]);
+      toast({ title: `💰 ₹${(amountPaise / 100).toFixed(2)} received via ${method}!` });
+    });
+
+    return () => { socket.disconnect(); };
+  }, [merchantId]);
+
+  // Fetch services + ads on mount
+  useEffect(() => { fetchServices(); fetchAds(); }, [merchantId]);
+
+  async function fetchServices() {
+    try {
+      const r = await fetch(`${API_URL}/api/merchant/${merchantId}/services`);
+      const d = await r.json();
+      setServices(d.services || []);
+    } catch { }
+  }
+
+  async function fetchAds() {
+    try {
+      const r = await fetch(`${API_URL}/api/ads/${merchantId}`);
+      const d = await r.json();
+      setAds(d.ads || []);
+    } catch { }
+  }
+
+  async function createMerchant() {
+    setCreating(true);
+    try {
+      const res = await fetch(`${API_URL}/api/create-merchant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: cf.name, serviceType: cf.serviceType, pricePerMinute: cf.pricePerMinute, location: cf.location, lat: cf.lat || undefined, lng: cf.lng || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setMerchantId(data.merchant.id);
+      setQrPayloads(data.qr);
+      setShowCreate(false);
+      toast({ title: "✅ Merchant created!", description: `ID: ${data.merchant.id}` });
+    } catch (err: any) { toast({ title: "Error", description: err.message, variant: "destructive" }); }
+    finally { setCreating(false); }
+  }
+
+  async function addService() {
+    setAddingSvc(true);
+    try {
+      const res = await fetch(`${API_URL}/api/merchant/service`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ merchantId, serviceType: sf.serviceType, pricePerMinute: sf.pricePerMinute, description: sf.description }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSvcQr(data.qr);
+      setServices(prev => [...prev, data.service]);
+      toast({ title: "Service added! QR generated." });
+    } catch (err: any) { toast({ title: "Error", description: err.message, variant: "destructive" }); }
+    finally { setAddingSvc(false); }
+  }
+
+  async function createAd() {
+    setAddingAd(true);
+    try {
+      const res = await fetch(`${API_URL}/api/ads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ merchantId, title: af.title, body: af.body, imageUrl: af.imageUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setAds(prev => [data.ad, ...prev]);
+      setShowAddAd(false);
+      setAf({ title: "", body: "", imageUrl: "" });
+      toast({ title: "Ad created! Shown to active customers." });
+    } catch (err: any) { toast({ title: "Error", description: err.message, variant: "destructive" }); }
+    finally { setAddingAd(false); }
+  }
+
+  const statusColors: Record<string, string> = {
+    active: "text-primary bg-primary/10",
+    paused_low_balance: "text-yellow-400 bg-yellow-400/10",
+    stopped: "text-muted-foreground bg-muted",
+    paid: "text-green-400 bg-green-400/10",
   };
-
-  const fetchStreams = async () => {
-    const { data } = await supabase.from("payment_streams" as any).select("*, merchant_locations(name)").order("created_at", { ascending: false }).limit(20);
-    if (data) setStreams(data as any[]);
-  };
-
-  const addLocation = async () => {
-    const { error } = await supabase.from("merchant_locations" as any).insert({
-      name: newLocation.name,
-      address: newLocation.address,
-      per_minute_rate: parseFloat(newLocation.per_minute_rate),
-      qr_code_data: crypto.randomUUID(),
-    } as any);
-    if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
-    } else {
-      toast({ title: "Location added!" });
-      setShowAddLocation(false);
-      setNewLocation({ name: "", address: "", per_minute_rate: "2" });
-      fetchLocations();
-    }
-  };
-
-  const handleLogout = async () => {
-    await signOut();
-    navigate("/");
-  };
-
-  const activeStreams = streams.filter((s: any) => s.status === "active");
-  const todayRevenue = streams
-    .filter((s: any) => new Date(s.created_at).toDateString() === new Date().toDateString())
-    .reduce((sum: number, s: any) => sum + Number(s.total_amount || 0), 0);
-
-  const stats = [
-    { label: "Active Streams", value: String(activeStreams.length), icon: Activity, change: `${activeStreams.length}` },
-    { label: "Today's Revenue", value: `₹${todayRevenue.toFixed(0)}`, icon: DollarSign, change: "" },
-    { label: "Locations", value: String(locations.length), icon: MapPin, change: "" },
-    { label: "Total Streams", value: String(streams.length), icon: TrendingUp, change: "" },
-  ];
 
   const tabs = [
     { id: "overview", label: "Overview", icon: BarChart3 },
-    { id: "locations", label: "Locations", icon: MapPin },
-    { id: "streams", label: "Live Streams", icon: Activity },
-    { id: "settings", label: "Settings", icon: Settings },
+    { id: "sessions", label: "Sessions", icon: Activity },
+    { id: "services", label: "Services", icon: Wrench },
+    { id: "ads", label: "Ads", icon: Megaphone },
+    { id: "qr", label: "QR Codes", icon: QrCode },
+    { id: "payments", label: "Payments", icon: DollarSign },
   ];
 
   return (
     <div className="flex min-h-screen bg-background">
-      {/* Sidebar */}
+      {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
       <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-border bg-card">
         <div className="flex items-center gap-2 p-6">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
             <Zap className="h-5 w-5 text-primary-foreground" />
           </div>
-          <span className="font-display text-lg font-bold text-foreground">
-            STREAM<span className="neon-text">PAY</span>
-          </span>
+          <span className="font-display text-lg font-bold text-foreground">PULSE<span className="neon-text">PAY</span></span>
         </div>
 
         <div className="mx-4 mb-4 rounded-xl bg-primary/10 p-3">
-          <p className="text-xs text-muted-foreground">Merchant Account</p>
-          <p className="font-display font-semibold text-foreground">{profile?.display_name || "Merchant"}</p>
+          <p className="text-xs text-muted-foreground">Merchant</p>
+          <p className="font-display font-semibold text-foreground">{profile?.display_name || cf.name || "PowerZone Gym"}</p>
+          <p className="mt-1 font-mono text-xs text-muted-foreground truncate">{merchantId}</p>
+          {activeSessions.length > 0 && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
+              <span className="pulse-dot h-2 w-2 rounded-full bg-primary" />
+              {activeSessions.length} live session{activeSessions.length > 1 ? "s" : ""}
+            </div>
+          )}
         </div>
 
-        <nav className="flex-1 space-y-1 px-3">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${
-                activeTab === tab.id
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              }`}
-            >
-              <tab.icon className="h-4 w-4" />
-              {tab.label}
+        <div className="mx-4 mb-3">
+          <button onClick={() => setShowCreate(!showCreate)}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary px-4 py-2.5 text-xs font-bold text-primary hover:bg-primary/10">
+            <Plus className="h-3.5 w-3.5" />Create Merchant
+          </button>
+        </div>
+
+        <nav className="flex-1 space-y-1 px-3 overflow-y-auto">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${tab === t.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
+              <t.icon className="h-4 w-4" />{t.label}
             </button>
           ))}
         </nav>
 
         <div className="border-t border-border p-4">
-          <button
-            onClick={handleLogout}
-            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium text-muted-foreground transition-all hover:bg-destructive/10 hover:text-destructive"
-          >
-            <LogOut className="h-4 w-4" />
-            Logout
+          <button onClick={async () => { await signOut(); navigate("/"); }}
+            className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+            <LogOut className="h-4 w-4" />Logout
           </button>
         </div>
       </aside>
 
-      {/* Main */}
+      {/* ── Main ────────────────────────────────────────────────────────────── */}
       <main className="ml-64 flex-1 p-8">
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="mb-8 flex items-center justify-between">
-            <div>
-              <h1 className="font-display text-3xl font-bold text-foreground">Dashboard</h1>
-              <p className="text-sm text-muted-foreground">Monitor your payment streams in real-time</p>
-            </div>
-            <button
-              onClick={() => setShowAddLocation(true)}
-              className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 font-display text-sm font-bold text-primary-foreground transition-all hover:neon-glow"
-            >
-              <Plus className="h-4 w-4" />
-              Add Location
-            </button>
-          </div>
 
-          {/* Stats */}
-          <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-            {stats.map((stat, i) => (
-              <motion.div
-                key={stat.label}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="glass rounded-2xl p-5"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
-                    <stat.icon className="h-5 w-5 text-primary" />
+          {/* Create merchant inline form */}
+          <AnimatePresence>
+            {showCreate && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                className="mb-6 glass rounded-2xl p-5 neon-border overflow-hidden">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-display text-lg font-semibold text-foreground">Create New Merchant</h3>
+                  <button onClick={() => setShowCreate(false)}><X className="h-4 w-4 text-muted-foreground" /></button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  {[
+                    { key: "name", ph: "Business name" }, { key: "location", ph: "Location" },
+                    { key: "pricePerMinute", ph: "₹/min", type: "number" },
+                    { key: "lat", ph: "Latitude (e.g., 28.6328)" }, { key: "lng", ph: "Longitude (e.g., 77.2197)" },
+                  ].map(({ key, ph, type }) => (
+                    <input key={key} type={type || "text"} value={(cf as any)[key]}
+                      onChange={e => setCf({ ...cf, [key]: e.target.value })} placeholder={ph}
+                      className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+                  ))}
+                  <select value={cf.serviceType} onChange={e => setCf({ ...cf, serviceType: e.target.value })}
+                    className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none">
+                    {VALID_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <button onClick={createMerchant} disabled={creating || !cf.name}
+                  className="mt-4 flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground hover:neon-glow disabled:opacity-50">
+                  {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Create & Get QR
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* ── OVERVIEW ───────────────────────────────────────────────────── */}
+          {tab === "overview" && (
+            <div className="space-y-6">
+              <div>
+                <h1 className="font-display text-3xl font-bold text-foreground">Merchant Dashboard</h1>
+                <p className="text-sm text-muted-foreground">Real-time sessions &amp; revenue</p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                {[
+                  { label: "Active Sessions", value: String(activeSessions.length), icon: Activity },
+                  { label: "Total Sessions", value: String(sessions.length), icon: Users },
+                  { label: "Revenue Today", value: formatPaise(totalRevenuePaise), icon: DollarSign },
+                  { label: "Payments", value: String(payments.length), icon: CheckCircle2 },
+                ].map((s, i) => (
+                  <motion.div key={s.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
+                    className="glass rounded-2xl p-5">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 mb-3">
+                      <s.icon className="h-5 w-5 text-primary" />
+                    </div>
+                    <p className="font-display text-2xl font-bold text-foreground">{s.value}</p>
+                    <p className="text-sm text-muted-foreground">{s.label}</p>
+                  </motion.div>
+                ))}
+              </div>
+
+              {/* Recent sessions in overview */}
+              <SessionsList sessions={sessions.slice(0, 5)} statusColors={statusColors} fmt={fmt} formatPaise={formatPaise} />
+            </div>
+          )}
+
+          {/* ── SESSIONS ───────────────────────────────────────────────────── */}
+          {tab === "sessions" && (
+            <div className="space-y-4">
+              <h2 className="font-display text-2xl font-bold text-foreground">Live Sessions</h2>
+              <SessionsList sessions={sessions} statusColors={statusColors} fmt={fmt} formatPaise={formatPaise} />
+            </div>
+          )}
+
+          {/* ── SERVICES ───────────────────────────────────────────────────── */}
+          {tab === "services" && (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl font-bold text-foreground">Services</h2>
+                <button onClick={() => setShowAddService(!showAddService)}
+                  className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:neon-glow">
+                  <Plus className="h-4 w-4" />Add Service
+                </button>
+              </div>
+
+              <AnimatePresence>
+                {showAddService && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                    className="glass rounded-2xl p-5 neon-border overflow-hidden">
+                    <p className="font-display font-semibold text-foreground mb-4">Add Service</p>
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <select value={sf.serviceType} onChange={e => setSf({ ...sf, serviceType: e.target.value })}
+                        className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none">
+                        {VALID_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <input type="number" value={sf.pricePerMinute} onChange={e => setSf({ ...sf, pricePerMinute: e.target.value })}
+                        placeholder="₹/min" className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+                      <input value={sf.description} onChange={e => setSf({ ...sf, description: e.target.value })}
+                        placeholder="Description" className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+                    </div>
+                    <button onClick={addService} disabled={addingSvc}
+                      className="mt-3 flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">
+                      {addingSvc ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Add &amp; Generate QR
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Service QR result */}
+              {svcQr && (
+                <div className="glass rounded-2xl p-5">
+                  <p className="font-display font-semibold text-foreground mb-4">Service QR Codes</p>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {[{ label: "START", qr: svcQr.start }, { label: "STOP", qr: svcQr.stop }].map(({ label, qr }) => (
+                      <div key={label} className="text-center rounded-xl bg-secondary/40 p-4">
+                        <p className="mb-2 text-xs font-bold text-muted-foreground">{label}</p>
+                        <div className="flex justify-center rounded-xl bg-white p-3">
+                          <QRCode value={qr} size={120} />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <p className="mt-3 font-display text-2xl font-bold text-foreground">{stat.value}</p>
-                <p className="text-sm text-muted-foreground">{stat.label}</p>
-              </motion.div>
-            ))}
-          </div>
+              )}
 
-          {/* Add Location Modal */}
-          {showAddLocation && (
-            <div className="mb-6 glass rounded-2xl p-6 neon-border">
-              <h3 className="mb-4 font-display text-lg font-semibold text-foreground">Add New Location</h3>
-              <div className="grid gap-4 md:grid-cols-3">
-                <input
-                  value={newLocation.name}
-                  onChange={(e) => setNewLocation({ ...newLocation, name: e.target.value })}
-                  placeholder="Location name"
-                  className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-                />
-                <input
-                  value={newLocation.address}
-                  onChange={(e) => setNewLocation({ ...newLocation, address: e.target.value })}
-                  placeholder="Address"
-                  className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-                />
-                <input
-                  value={newLocation.per_minute_rate}
-                  onChange={(e) => setNewLocation({ ...newLocation, per_minute_rate: e.target.value })}
-                  placeholder="₹ per minute"
-                  type="number"
-                  step="0.5"
-                  className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none"
-                />
-              </div>
-              <div className="mt-4 flex gap-3">
-                <button onClick={addLocation} className="rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground hover:neon-glow">
-                  Save
-                </button>
-                <button onClick={() => setShowAddLocation(false)} className="rounded-xl border border-border px-6 py-2.5 text-sm text-muted-foreground hover:text-foreground">
-                  Cancel
-                </button>
+              {/* Service list */}
+              <div className="space-y-3">
+                {services.map(svc => (
+                  <div key={svc.id} className="glass rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                      <p className="font-medium text-foreground capitalize">{svc.service_type}</p>
+                      <p className="text-xs text-muted-foreground">{svc.description || "No description"}</p>
+                    </div>
+                    <p className="font-display font-bold text-gradient">{formatPaise(svc.price_per_minute_paise)}<span className="text-xs text-muted-foreground">/min</span></p>
+                  </div>
+                ))}
+                {services.length === 0 && <p className="text-sm text-muted-foreground">No services yet. Add one above.</p>}
               </div>
             </div>
           )}
 
-          {/* Locations Tab */}
-          {activeTab === "locations" && (
-            <div className="glass rounded-2xl p-6">
-              <h3 className="mb-4 font-display text-lg font-semibold text-foreground">Your Locations</h3>
-              {locations.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No locations yet. Add your first location above.</p>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  {locations.map((loc: any) => (
-                    <div key={loc.id} className="rounded-xl border border-border bg-secondary/50 p-4">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-display font-semibold text-foreground">{loc.name}</h4>
-                        <span className="rounded-lg bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                          ₹{Number(loc.per_minute_rate).toFixed(1)}/min
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-muted-foreground">{loc.address || "No address"}</p>
-                      <div className="mt-3 flex items-center gap-2">
-                        <QrCode className="h-4 w-4 text-muted-foreground" />
-                        <span className="text-xs text-muted-foreground font-mono">{loc.qr_code_data?.slice(0, 12)}...</span>
-                      </div>
+          {/* ── ADS ─────────────────────────────────────────────────────────── */}
+          {tab === "ads" && (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl font-bold text-foreground">Advertisement Manager</h2>
+                <button onClick={() => setShowAddAd(!showAddAd)}
+                  className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:neon-glow">
+                  <Plus className="h-4 w-4" />Create Ad
+                </button>
+              </div>
+
+              <div className="glass rounded-2xl p-4 text-sm text-muted-foreground bg-primary/5 border border-primary/20">
+                <p>💡 Ads are displayed to active customers on their session screen and to users browsing nearby services.</p>
+              </div>
+
+              <AnimatePresence>
+                {showAddAd && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
+                    className="glass rounded-2xl p-5 neon-border overflow-hidden">
+                    <div className="space-y-3">
+                      <input value={af.title} onChange={e => setAf({ ...af, title: e.target.value })}
+                        placeholder="Ad title e.g. 🎉 New Year Offer!" className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+                      <textarea value={af.body} onChange={e => setAf({ ...af, body: e.target.value })}
+                        placeholder="Ad body text…" rows={3} className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+                      <input value={af.imageUrl} onChange={e => setAf({ ...af, imageUrl: e.target.value })}
+                        placeholder="Image URL (optional)" className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
                     </div>
+                    <button onClick={createAd} disabled={addingAd || !af.title}
+                      className="mt-3 flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">
+                      {addingAd ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}Publish Ad
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div className="space-y-3">
+                {ads.map(ad => (
+                  <div key={ad.id} className="glass rounded-2xl p-5">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <p className="font-display font-semibold text-foreground">{ad.title}</p>
+                        {ad.body && <p className="text-sm text-muted-foreground mt-1">{ad.body}</p>}
+                      </div>
+                      <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-400">Active</span>
+                    </div>
+                  </div>
+                ))}
+                {ads.length === 0 && <p className="text-sm text-muted-foreground">No ads yet. Create one to promote your business to active customers.</p>}
+              </div>
+            </div>
+          )}
+
+          {/* ── QR CODES ───────────────────────────────────────────────────── */}
+          {tab === "qr" && (
+            <div className="space-y-5">
+              <h2 className="font-display text-2xl font-bold text-foreground">QR Codes</h2>
+              <p className="text-sm text-muted-foreground">Print and place these at your location. Merchant ID: <span className="font-mono text-primary">{merchantId}</span></p>
+              <div className="grid gap-6 sm:grid-cols-2">
+                {[{ label: "START QR — Customer scans to begin session", qr: qrPayloads.start, border: "border-primary/30" },
+                { label: "STOP QR — Customer scans to end & pay", qr: qrPayloads.stop, border: "border-destructive/30" }].map(({ label, qr, border }) => (
+                  <div key={label} className={`glass rounded-2xl p-5 border ${border} text-center`}>
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+                    <div className="flex justify-center rounded-xl bg-white p-4 mb-3">
+                      <QRCode value={qr} size={160} />
+                    </div>
+                    <p className="font-mono text-xs text-muted-foreground break-all">{qr.slice(0, 50)}…</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── PAYMENTS ───────────────────────────────────────────────────── */}
+          {tab === "payments" && (
+            <div className="space-y-4">
+              <h2 className="font-display text-2xl font-bold text-foreground">Payments Received</h2>
+              {payments.length === 0 ? (
+                <div className="glass rounded-2xl p-10 text-center text-muted-foreground">
+                  <DollarSign className="h-12 w-12 mx-auto mb-3 opacity-30" />
+                  <p>Payments appear here after a session is settled.</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {payments.map((p, i) => (
+                    <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                      className="flex items-center justify-between rounded-2xl glass px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <CheckCircle2 className="h-5 w-5 text-green-400" />
+                        <div>
+                          <p className="text-sm font-medium text-foreground">Payment via {p.method}</p>
+                          <p className="font-mono text-xs text-muted-foreground">{p.paymentId}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-display text-xl font-bold text-green-400">{formatPaise(p.amountPaise)}</p>
+                        <p className="text-xs text-muted-foreground">{new Date(p.receivedAt).toLocaleTimeString()}</p>
+                      </div>
+                    </motion.div>
                   ))}
                 </div>
               )}
-            </div>
-          )}
-
-          {/* Streams Table */}
-          {(activeTab === "overview" || activeTab === "streams") && (
-            <div className="glass rounded-2xl p-6">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="font-display text-lg font-semibold text-foreground">Recent Streams</h3>
-                {activeStreams.length > 0 && (
-                  <span className="flex items-center gap-1.5 text-sm text-primary">
-                    <span className="pulse-dot h-2 w-2 rounded-full bg-primary" />
-                    {activeStreams.length} active
-                  </span>
-                )}
-              </div>
-
-              {streams.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No streams yet. Customers will appear here when they scan your QR code.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="pb-3 text-left text-xs font-medium text-muted-foreground">Location</th>
-                        <th className="pb-3 text-left text-xs font-medium text-muted-foreground">Started</th>
-                        <th className="pb-3 text-left text-xs font-medium text-muted-foreground">Amount</th>
-                        <th className="pb-3 text-left text-xs font-medium text-muted-foreground">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {streams.map((stream: any) => (
-                        <tr key={stream.id} className="group">
-                          <td className="py-3 text-sm font-medium text-foreground">
-                            {(stream as any).merchant_locations?.name || "Unknown"}
-                          </td>
-                          <td className="py-3 text-sm text-muted-foreground">
-                            {new Date(stream.start_time).toLocaleString()}
-                          </td>
-                          <td className="py-3 text-sm font-semibold text-foreground">₹{Number(stream.total_amount).toFixed(2)}</td>
-                          <td className="py-3">
-                            <span
-                              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                                stream.status === "active"
-                                  ? "bg-primary/10 text-primary"
-                                  : "bg-muted text-muted-foreground"
-                              }`}
-                            >
-                              {stream.status === "active" && (
-                                <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-primary" />
-                              )}
-                              {stream.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Occupancy Heat Map */}
-          {activeTab === "overview" && (
-            <div className="mt-6 glass rounded-2xl p-6">
-              <h3 className="mb-4 font-display text-lg font-semibold text-foreground">
-                Occupancy Overview
-              </h3>
-              <div className="grid grid-cols-7 gap-2">
-                {Array.from({ length: 28 }, (_, i) => {
-                  const intensity = Math.random();
-                  return (
-                    <div
-                      key={i}
-                      className="flex h-10 items-center justify-center rounded-lg text-xs text-muted-foreground"
-                      style={{
-                        backgroundColor: `hsl(142 72% 50% / ${intensity * 0.3 + 0.05})`,
-                      }}
-                    >
-                      {Math.floor(intensity * 20)}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-                <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
-              </div>
             </div>
           )}
         </motion.div>
       </main>
     </div>
   );
-};
+}
 
-export default MerchantDashboard;
+// ── Sessions list sub-component ───────────────────────────────────────────────
+function SessionsList({ sessions, statusColors, fmt, formatPaise }: any) {
+  if (sessions.length === 0) {
+    return <p className="text-sm text-muted-foreground py-4">No sessions yet. Share your QR code!</p>;
+  }
+  return (
+    <div className="glass rounded-2xl p-5 space-y-3">
+      <AnimatePresence>
+        {sessions.map((s: LiveSession) => (
+          <motion.div key={s.sessionId} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}
+            className="flex items-center justify-between rounded-xl bg-secondary/50 px-4 py-3 gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`flex h-9 w-9 items-center justify-center rounded-xl shrink-0 ${statusColors[s.status] || "bg-muted"}`}>
+                {s.status === "paid" ? <CheckCircle2 className="h-4 w-4" /> : s.status === "paused_low_balance" ? <PauseCircle className="h-4 w-4" /> : s.status === "stopped" ? <AlertTriangle className="h-4 w-4" /> : <Activity className="h-4 w-4" />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">{'User ' + s.userId?.slice(0, 10) + '…'}</p>
+                <p className="text-xs text-muted-foreground">{s.serviceType} · {fmt(s.elapsedSec)}</p>
+              </div>
+            </div>
+            <div className="text-right shrink-0">
+              <p className="font-display font-bold text-foreground">{formatPaise(s.totalDebitedPaise)}</p>
+              <span className={`text-xs font-medium rounded-full px-2 py-0.5 ${statusColors[s.status]}`}>{s.status}</span>
+            </div>
+          </motion.div>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
