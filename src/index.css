@@ -6,52 +6,52 @@
 
 @layer base {
   :root {
-    --background: 220 20% 4%;
-    --foreground: 0 0% 95%;
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
 
-    --card: 220 20% 7%;
-    --card-foreground: 0 0% 95%;
+    --card: 0 0% 7%;
+    --card-foreground: 0 0% 100%;
 
-    --popover: 220 20% 7%;
-    --popover-foreground: 0 0% 95%;
+    --popover: 0 0% 7%;
+    --popover-foreground: 0 0% 100%;
 
-    --primary: 142 72% 50%;
-    --primary-foreground: 220 20% 4%;
+    --primary: 351 100% 86%;
+    --primary-foreground: 0 0% 0%;
 
-    --secondary: 220 15% 12%;
-    --secondary-foreground: 0 0% 85%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 100%;
 
-    --muted: 220 15% 15%;
-    --muted-foreground: 220 10% 55%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 60%;
 
-    --accent: 142 72% 50%;
-    --accent-foreground: 220 20% 4%;
+    --accent: 351 100% 86%;
+    --accent-foreground: 0 0% 0%;
 
     --destructive: 0 72% 50%;
-    --destructive-foreground: 0 0% 95%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 220 15% 16%;
-    --input: 220 15% 16%;
-    --ring: 142 72% 50%;
+    --border: 0 0% 15%;
+    --input: 0 0% 15%;
+    --ring: 351 100% 86%;
 
     --radius: 0.75rem;
 
-    --sidebar-background: 220 20% 6%;
-    --sidebar-foreground: 0 0% 90%;
-    --sidebar-primary: 142 72% 50%;
-    --sidebar-primary-foreground: 220 20% 4%;
-    --sidebar-accent: 220 15% 12%;
-    --sidebar-accent-foreground: 0 0% 90%;
-    --sidebar-border: 220 15% 14%;
-    --sidebar-ring: 142 72% 50%;
+    --sidebar-background: 0 0% 7%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 351 100% 86%;
+    --sidebar-primary-foreground: 0 0% 0%;
+    --sidebar-accent: 0 0% 15%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 15%;
+    --sidebar-ring: 351 100% 86%;
 
     /* Custom tokens */
-    --neon: 142 72% 50%;
-    --neon-glow: 142 72% 60%;
-    --glass-bg: 220 20% 8%;
-    --glass-border: 220 15% 18%;
-    --surface: 220 18% 10%;
-    --surface-hover: 220 18% 14%;
+    --neon: 351 100% 86%;
+    --neon-glow: 330 100% 71%;
+    --glass-bg: 0 0% 7%;
+    --glass-border: 0 0% 15%;
+    --surface: 0 0% 11%;
+    --surface-hover: 0 0% 15%;
   }
 }
 
@@ -61,7 +61,7 @@
   }
 
   body {
-    @apply bg-background text-foreground font-sans antialiased;
+    @apply bg-background text-foreground font-sans antialiased selection:bg-theme-pink selection:text-black;
     font-family: 'Inter', sans-serif;
   }
 
