@@ -359,34 +359,109 @@ export default function MerchantDashboard() {
           </AnimatePresence>
 
           {/* ── OVERVIEW ───────────────────────────────────────────────────── */}
-          {tab === "overview" && (
-            <div className="space-y-6">
-              <div>
-                <h1 className="font-display text-3xl font-bold text-foreground">Merchant Dashboard</h1>
-                <p className="text-sm text-muted-foreground">Real-time sessions &amp; revenue</p>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                {[
-                  { label: "Active Sessions", value: String(activeSessions.length), icon: Activity },
-                  { label: "Total Sessions", value: String(sessions.length), icon: Users },
-                  { label: "Revenue Today", value: formatPaise(totalRevenuePaise), icon: DollarSign },
-                  { label: "Payments", value: String(payments.length), icon: CheckCircle2 },
-                ].map((s, i) => (
-                  <motion.div key={s.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
-                    className="glass rounded-2xl p-5">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 mb-3">
-                      <s.icon className="h-5 w-5 text-primary" />
-                    </div>
-                    <p className="font-display text-2xl font-bold text-foreground">{s.value}</p>
-                    <p className="text-sm text-muted-foreground">{s.label}</p>
-                  </motion.div>
-                ))}
-              </div>
+          {tab === "overview" && (() => {
+            const paid500 = merchantPayments.filter(p => p.status === "paid");
+            const totalRev500 = paid500.reduce((s, p) => s + p.amountINR, 0);
+            const gstCollected = paid500.reduce((s, p) => s + p.gstAmountINR, 0);
+            const netRev500 = paid500.reduce((s, p) => s + p.baseAmountINR, 0);
+            return (
+              <div className="space-y-6">
+                <div>
+                  <h1 className="font-display text-3xl font-bold text-foreground">Merchant Dashboard</h1>
+                  <p className="text-sm text-muted-foreground">FY 2024-25 · Real-time sessions &amp; revenue overview</p>
+                </div>
 
-              {/* Recent sessions in overview */}
-              <SessionsList sessions={sessions.slice(0, 5)} statusColors={statusColors} fmt={fmt} formatPaise={formatPaise} />
-            </div>
-          )}
+                {/* ── KPI grid ── */}
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  {[
+                    {
+                      label: "Active Sessions",
+                      value: String(activeSessions.length),
+                      sub: `${sessions.length} total today`,
+                      icon: Activity,
+                      color: "text-primary",
+                      bg: "bg-primary/10",
+                    },
+                    {
+                      label: "Total Revenue",
+                      value: `₹${(totalRev500 / 1000).toFixed(1)}K`,
+                      sub: `Net of GST · FY 24-25`,
+                      icon: DollarSign,
+                      color: "text-green-400",
+                      bg: "bg-green-500/10",
+                    },
+                    {
+                      label: "GST Collected",
+                      value: `₹${(gstCollected / 1000).toFixed(1)}K`,
+                      sub: `Payable to govt.`,
+                      icon: CheckCircle2,
+                      color: "text-blue-400",
+                      bg: "bg-blue-500/10",
+                    },
+                    {
+                      label: "Payments",
+                      value: String(paid500.length),
+                      sub: `₹${(totalRev500 + gstCollected).toFixed(0)} gross billed`,
+                      icon: Users,
+                      color: "text-purple-400",
+                      bg: "bg-purple-500/10",
+                    },
+                  ].map((s, i) => (
+                    <motion.div key={s.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
+                      className="glass rounded-2xl p-5 cursor-pointer hover:border-primary/40 border border-transparent transition-all"
+                      onClick={() => s.label === "GST Collected" || s.label === "Total Revenue" || s.label === "Payments" ? setTab("payments") : setTab("sessions")}>
+                      <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${s.bg} mb-3`}>
+                        <s.icon className={`h-5 w-5 ${s.color}`} />
+                      </div>
+                      <p className={`font-display text-2xl font-bold ${s.color}`}>{s.value}</p>
+                      <p className="text-sm font-medium text-foreground">{s.label}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{s.sub}</p>
+                    </motion.div>
+                  ))}
+                </div>
+
+                {/* ── Revenue by service ── */}
+                <div className="glass rounded-2xl p-5">
+                  <h3 className="font-display font-semibold text-foreground mb-4 flex items-center gap-2">
+                    <DollarSign className="h-4 w-4 text-primary" />Revenue by Service Type (FY 24-25)
+                  </h3>
+                  <div className="space-y-3">
+                    {Object.entries(
+                      paid500.reduce((acc, p) => {
+                        acc[p.serviceType] = (acc[p.serviceType] || 0) + p.baseAmountINR;
+                        return acc;
+                      }, {} as Record<string, number>)
+                    )
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([svc, rev]) => {
+                        const pct = Math.round((rev / netRev500) * 100);
+                        return (
+                          <div key={svc}>
+                            <div className="flex justify-between text-xs mb-1">
+                              <span className="capitalize font-medium text-foreground">{svc}</span>
+                              <span className="text-muted-foreground">₹{rev.toFixed(0)} ({pct}%)</span>
+                            </div>
+                            <div className="h-2 rounded-full bg-secondary overflow-hidden">
+                              <motion.div
+                                initial={{ width: 0 }} animate={{ width: `${pct}%` }} transition={{ delay: 0.3, duration: 0.6 }}
+                                className="h-full rounded-full bg-gradient-to-r from-primary to-purple-500"
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                {/* Recent live sessions */}
+                <div>
+                  <h3 className="font-display font-semibold text-foreground mb-3">Live Sessions</h3>
+                  <SessionsList sessions={sessions.slice(0, 5)} statusColors={statusColors} fmt={fmt} formatPaise={formatPaise} />
+                </div>
+              </div>
+            );
+          })()}
+
 
           {/* ── ANALYTICS ──────────────────────────────────────────────────── */}
           {tab === "analytics" && <AnalyticsDashboard />}
