@@ -148,7 +148,6 @@ export default function CameraQR() {
         const walletBalance = walletService.getBalance(userId);
 
         if (walletBalance >= finalPaise) {
-            // Pay from local wallet
             try {
                 const updated = walletService.debit(userId, finalPaise, sessionId, "Merchant");
                 toast({
@@ -162,29 +161,30 @@ export default function CameraQR() {
             return;
         }
 
-        // Not enough wallet balance — create Razorpay order and open checkout
+        // Not enough wallet — open Razorpay directly (no backend order needed)
         try {
-            const orderRes = await fetch(`${API_URL}/api/create-order`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sessionId }),
-            });
-            const { order } = await orderRes.json();
-            if (!order) throw new Error("Could not create order");
-
             const loaded = await loadRazorpay();
             if (!loaded) throw new Error("Razorpay script failed");
 
             await new Promise<void>(resolve => {
                 const rzp = new window.Razorpay({
                     key: RZP_KEY,
-                    order_id: order.id,
-                    amount: order.amount,
+                    amount: finalPaise,
                     currency: "INR",
                     name: "Pulse Pay",
                     description: `Session #${sessionId.slice(0, 8)}`,
                     theme: { color: "#6366f1" },
-                    prefill: { name: user?.email || "" },
+                    prefill: { name: user?.email || "", vpa: "success@razorpay" },
+                    config: {
+                        display: {
+                            blocks: {
+                                upi: { name: "Pay via UPI", instruments: [{ method: "upi" }] },
+                                card: { name: "Pay via Card", instruments: [{ method: "card" }] },
+                            },
+                            sequence: ["block.upi", "block.card"],
+                            preferences: { show_default_blocks: false },
+                        },
+                    },
                     handler: (response: any) => {
                         toast({ title: "💚 Payment Successful!", description: `ID: ${response.razorpay_payment_id}` });
                         resolve();

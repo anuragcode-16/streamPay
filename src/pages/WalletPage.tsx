@@ -108,6 +108,17 @@ export default function WalletPage() {
                     name: "Pulse Pay Wallet",
                     description: `Wallet Top-up ₹${topupAmount}`,
                     theme: { color: "#6366f1" },
+                    prefill: { vpa: "success@razorpay" },  // test UPI VPA
+                    config: {
+                        display: {
+                            blocks: {
+                                upi: { name: "Pay via UPI", instruments: [{ method: "upi" }] },
+                                card: { name: "Pay via Card", instruments: [{ method: "card" }] },
+                            },
+                            sequence: ["block.upi", "block.card"],
+                            preferences: { show_default_blocks: false },
+                        },
+                    },
                     handler: (_response: any) => {
                         // Credit wallet locally on payment success
                         const updated = walletService.topUp(userId, amountPaise);
