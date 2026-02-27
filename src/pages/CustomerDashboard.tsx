@@ -28,7 +28,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import WalletPage from "./WalletPage";
 import NearbyPage from "./NearbyPage";
-import PaymentChoiceModal from "@/components/PaymentChoiceModal";
+import walletService from "@/services/walletService";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
@@ -59,21 +59,20 @@ export default function CustomerDashboard() {
   const [walletPaise, setWalletPaise] = useState(0);
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [paymentResult, setPaymentResult] = useState<PaymentResult | null>(null);
-  const [showPayment, setShowPayment] = useState(false);
-  const [stopData, setStopData] = useState<any>(null);
   const [transactions, setTransactions] = useState<TxSession[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
 
   const localTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const socketRef = useRef<Socket | null>(null);
+  const activeSessionRef = useRef<ActiveSession | null>(null);
   const userId = user?.id || "user_demo_customer";
 
-  // ── Fetch wallet balance once ─────────────────────────────────────────────
+  // Keep ref in sync with state for use inside socket callbacks
+  useEffect(() => { activeSessionRef.current = activeSession; }, [activeSession]);
+
+  // ── Load wallet balance from localStorage ──────────────────────────────────
   useEffect(() => {
-    fetch(`${API_URL}/api/wallet/${userId}`)
-      .then(r => r.json())
-      .then(d => { if (d.wallet) setWalletPaise(d.wallet.balance_paise); })
-      .catch(() => { });
+    setWalletPaise(walletService.getBalance(userId));
   }, [userId]);
 
   // ── Socket.IO ─────────────────────────────────────────────────────────────
@@ -101,8 +100,23 @@ export default function CustomerDashboard() {
     socket.on("session:stop", (data: any) => {
       setActiveSession(prev => !prev ? prev : { ...prev, status: "stopped", finalAmountPaise: data.finalAmountPaise });
       if (data.finalAmountPaise > 0) {
-        setStopData({ session: { id: data.sessionId }, finalAmountPaise: data.finalAmountPaise, durationSec: data.durationSec, walletBalance: walletPaise, canPayWallet: walletPaise >= data.finalAmountPaise });
-        setShowPayment(true);
+        // ── Auto-deduct from localStorage wallet ──
+        try {
+          const updated = walletService.debit(
+            userId,
+            data.finalAmountPaise,
+            data.sessionId,
+            activeSessionRef.current?.merchantName || "Merchant"
+          );
+          setWalletPaise(updated.balance_paise);
+          setPaymentResult({ sessionId: data.sessionId, amountPaise: data.finalAmountPaise, method: "wallet", paymentId: `ppw_auto_${Date.now()}` });
+          toast({ title: `✅ ₹${(data.finalAmountPaise / 100).toFixed(2)} deducted from wallet`, description: `Session complete · New balance: ₹${(updated.balance_paise / 100).toFixed(2)}` });
+        } catch {
+          toast({ title: "⚠️ Insufficient wallet balance", description: `Please top up to cover ₹${(data.finalAmountPaise / 100).toFixed(2)}`, variant: "destructive" });
+        }
+        setTimeout(() => setActiveSession(null), 2000);
+      } else {
+        setActiveSession(null);
       }
     });
 
@@ -112,7 +126,7 @@ export default function CustomerDashboard() {
       toast({ title: `✅ Paid ₹${(data.amountPaise / 100).toFixed(2)} via ${data.method}!` });
     });
 
-    socket.on("wallet:update", ({ balancePaise }: any) => { if (balancePaise !== undefined) setWalletPaise(balancePaise); });
+    socket.on("wallet:update", () => { setWalletPaise(walletService.getBalance(userId)); });
 
     return () => { socket.disconnect(); };
   }, [userId]);
@@ -404,13 +418,6 @@ export default function CustomerDashboard() {
         </motion.div>
       </main>
 
-      {/* Payment Modal */}
-      {showPayment && stopData && (
-        <PaymentChoiceModal
-          stopData={stopData} userId={userId}
-          onClose={() => { setShowPayment(false); setStopData(null); setActiveSession(null); }}
-        />
-      )}
     </div>
   );
 }

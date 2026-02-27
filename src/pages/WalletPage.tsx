@@ -1,45 +1,21 @@
 /**
- * WalletPage.tsx — Customer Wallet
+ * WalletPage.tsx — Customer Wallet (localStorage-backed)
  *
  * Shows:
  *  - Wallet ID (PPW-XXXXXXXX), Display Name, Balance
- *  - Two creation paths: Fill details form OR Top-up via Razorpay (test mode)
- *  - Top-up button → Razorpay Checkout with realistic PIN entry experience
- *  - Transaction history: topups, per-tick debits, payments
+ *  - Create wallet form
+ *  - Top-up via simulated UPI PIN entry (demo)
+ *  - Transaction history from localStorage
  */
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wallet, Plus, ArrowDownLeft, ArrowUpRight, RefreshCw, Download, Loader2, CheckCircle2, CreditCard, Smartphone } from "lucide-react";
+import { Wallet, Plus, ArrowDownLeft, ArrowUpRight, RefreshCw, Loader2, CheckCircle2, Smartphone } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
-
-declare global { interface Window { Razorpay: any; } }
-
-function loadRazorpay(): Promise<boolean> {
-    return new Promise((resolve) => {
-        if (window.Razorpay) return resolve(true);
-        const s = document.createElement("script");
-        s.src = "https://checkout.razorpay.com/v1/checkout.js";
-        s.onload = () => resolve(true);
-        s.onerror = () => resolve(false);
-        document.body.appendChild(s);
-    });
-}
+import walletService, { WalletData, WalletTx } from "@/services/walletService";
 
 function formatPaise(paise: number) {
     return `₹${(paise / 100).toFixed(2)}`;
-}
-
-interface WalletData {
-    wallet_id: string; user_id: string; display_name: string;
-    balance_paise: number; created_at: string;
-}
-
-interface WalletTx {
-    id: string; type: string; amount_paise: number; status: string;
-    note: string; created_at: string;
 }
 
 export default function WalletPage() {
@@ -50,14 +26,12 @@ export default function WalletPage() {
     const [transactions, setTransactions] = useState<WalletTx[]>([]);
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
-    const [toppingUp, setToppingUp] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const [showTopup, setShowTopup] = useState(false);
     const [displayName, setDisplayName] = useState("");
     const [topupAmount, setTopupAmount] = useState("100");
-    const [topupMethod, setTopupMethod] = useState<"form" | "razorpay">("razorpay");
 
-    // Simulated PIN entry state for Razorpay UX
+    // Simulated PIN entry state
     const [showPinUI, setShowPinUI] = useState(false);
     const [pin, setPin] = useState("");
     const [pinVerifying, setPinVerifying] = useState(false);
@@ -65,118 +39,72 @@ export default function WalletPage() {
     const userId = user?.id || "user_demo_customer";
 
     useEffect(() => {
-        fetchWallet();
+        loadWallet();
     }, [userId]);
 
-    async function fetchWallet() {
+    function loadWallet() {
         setLoading(true);
         try {
-            const res = await fetch(`${API_URL}/api/wallet/${userId}`);
-            if (res.ok) {
-                const data = await res.json();
-                setWallet(data.wallet);
-                fetchTransactions();
+            const w = walletService.getWallet(userId);
+            if (w) {
+                setWallet(w);
+                setTransactions(walletService.getTransactions(userId));
+                setShowCreate(false);
             } else {
                 setWallet(null);
                 setShowCreate(true);
             }
-        } catch { toast({ title: "Could not load wallet", variant: "destructive" }); }
-        finally { setLoading(false); }
+        } catch {
+            toast({ title: "Could not load wallet", variant: "destructive" });
+        } finally {
+            setLoading(false);
+        }
     }
 
-    async function fetchTransactions() {
-        try {
-            const res = await fetch(`${API_URL}/api/wallet/transactions/${userId}`);
-            const data = await res.json();
-            setTransactions(data.transactions || []);
-        } catch { }
-    }
-
-    async function createWallet() {
+    function handleCreateWallet() {
         setCreating(true);
         try {
-            const res = await fetch(`${API_URL}/api/wallet/create`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId, displayName: displayName || `Wallet-${userId.slice(0, 6)}` }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error);
-            setWallet(data.wallet);
+            const w = walletService.createWallet(userId, displayName || undefined);
+            setWallet(w);
             setShowCreate(false);
-            toast({ title: `✅ Wallet created! ID: ${data.wallet.wallet_id}` });
+            toast({ title: `✅ Wallet created! ID: ${w.wallet_id}` });
         } catch (err: any) {
             toast({ title: "Error", description: err.message, variant: "destructive" });
-        } finally { setCreating(false); }
+        } finally {
+            setCreating(false);
+        }
     }
 
-    async function openRazorpayTopup() {
-        setToppingUp(true);
-        try {
-            const amountINR = parseFloat(topupAmount);
-            if (isNaN(amountINR) || amountINR < 1) throw new Error("Minimum top-up is ₹1");
-
-            const res = await fetch(`${API_URL}/api/wallet/topup`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId, amountINR }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error);
-
-            const ok = await loadRazorpay();
-            if (!ok) throw new Error("Razorpay failed to load");
-
-            const rzp = new window.Razorpay({
-                key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-                order_id: data.order.id,
-                amount: data.amountPaise,
-                currency: "INR",
-                name: "Pulse Pay Wallet",
-                description: `Top-up ${wallet?.wallet_id || "wallet"}`,
-                prefill: { email: user?.email || "", contact: "" },
-                theme: { color: "#6366f1" },
-                handler: (resp: any) => {
-                    // Optimistic: show "processing" — webhook will confirm
-                    toast({ title: "💳 Processing top-up…", description: "Your wallet will be credited shortly." });
-                    setShowTopup(false);
-                    setTimeout(fetchWallet, 3000);
-                },
-                modal: { ondismiss: () => setToppingUp(false) },
-            });
-            rzp.open();
-        } catch (err: any) {
-            toast({ title: "Error", description: err.message, variant: "destructive" });
-        } finally { setToppingUp(false); }
-    }
-
-    // Simulated UPI PIN flow (for "custom form" demo path)
-    async function simulateUPITopup() {
+    // Simulated UPI PIN flow for demo top-up
+    function simulateUPITopup() {
         setShowPinUI(true);
         setPin("");
     }
 
     async function submitPin() {
-        if (pin.length < 4) { toast({ title: "Enter 4-digit UPI PIN", variant: "destructive" }); return; }
+        if (pin.length < 4) {
+            toast({ title: "Enter 4-digit UPI PIN", variant: "destructive" });
+            return;
+        }
         setPinVerifying(true);
         // Simulate bank verification delay
         await new Promise(r => setTimeout(r, 2000));
         setPinVerifying(false);
         setShowPinUI(false);
-        // Credit wallet directly for demo (in production this goes through Razorpay)
+
         try {
             const amountPaise = Math.round(parseFloat(topupAmount) * 100);
-            // For demo, call an internal credit endpoint
-            const res = await fetch(`${API_URL}/api/wallet/create`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId, displayName: wallet?.display_name }),
-            });
-            // Just refetch to show the demo working
-            await fetchWallet();
-            toast({ title: `✅ Top-up of ₹${topupAmount} simulated!`, description: "In production, Razorpay webhook credits your wallet." });
+            if (isNaN(amountPaise) || amountPaise < 100) {
+                throw new Error("Minimum top-up is ₹1");
+            }
+            const updated = walletService.topUp(userId, amountPaise);
+            setWallet(updated);
+            setTransactions(walletService.getTransactions(userId));
+            toast({ title: `✅ ₹${topupAmount} added to wallet!`, description: `New balance: ${formatPaise(updated.balance_paise)}` });
             setShowTopup(false);
-        } catch { }
+        } catch (err: any) {
+            toast({ title: "Error", description: err.message, variant: "destructive" });
+        }
     }
 
     const txTypes: Record<string, { label: string; icon: any; color: string }> = {
@@ -219,7 +147,7 @@ export default function WalletPage() {
                         </div>
 
                         <button
-                            onClick={createWallet} disabled={creating}
+                            onClick={handleCreateWallet} disabled={creating}
                             className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50"
                         >
                             {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
@@ -256,7 +184,7 @@ export default function WalletPage() {
                             <button onClick={() => setShowTopup(true)} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground hover:neon-glow">
                                 <Plus className="h-4 w-4" />Add Money
                             </button>
-                            <button onClick={fetchTransactions} className="flex items-center justify-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground">
+                            <button onClick={loadWallet} className="flex items-center justify-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-muted-foreground hover:text-foreground">
                                 <RefreshCw className="h-4 w-4" />Refresh
                             </button>
                         </div>
@@ -336,33 +264,17 @@ export default function WalletPage() {
 
                                     <p className="mb-3 text-xs text-muted-foreground font-medium uppercase tracking-wide">Pay with</p>
                                     <div className="space-y-3 mb-4">
-                                        {/* Razorpay option (real test mode) */}
-                                        <button
-                                            onClick={() => { setTopupMethod("razorpay"); openRazorpayTopup(); }}
-                                            disabled={toppingUp}
-                                            className="flex w-full items-center gap-4 rounded-xl border border-primary/40 bg-primary/5 p-4 text-left transition hover:bg-primary/10"
-                                        >
-                                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#2DD4BF]/20">
-                                                <CreditCard className="h-5 w-5 text-[#2DD4BF]" />
-                                            </div>
-                                            <div>
-                                                <p className="font-semibold text-foreground text-sm">Razorpay (Test Mode)</p>
-                                                <p className="text-xs text-muted-foreground">UPI · Cards · Net Banking — use <span className="font-mono text-primary">success@razorpay</span></p>
-                                            </div>
-                                        </button>
-
                                         {/* Demo UPI PIN simulation */}
                                         <button
                                             onClick={simulateUPITopup}
-                                            disabled={toppingUp}
                                             className="flex w-full items-center gap-4 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 text-left transition hover:bg-blue-500/10"
                                         >
                                             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/20">
                                                 <Smartphone className="h-5 w-5 text-blue-400" />
                                             </div>
                                             <div>
-                                                <p className="font-semibold text-foreground text-sm">Demo UPI PIN Entry</p>
-                                                <p className="text-xs text-muted-foreground">Simulates real UPI bank PIN experience</p>
+                                                <p className="font-semibold text-foreground text-sm">UPI Payment (Demo)</p>
+                                                <p className="text-xs text-muted-foreground">Enter any 4+ digit PIN to confirm</p>
                                             </div>
                                         </button>
                                     </div>
