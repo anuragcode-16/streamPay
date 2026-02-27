@@ -1,18 +1,37 @@
 /**
- * WalletPage.tsx — Customer Wallet (localStorage-backed)
+ * WalletPage.tsx — Customer Wallet with real Razorpay Topup
  *
- * Shows:
- *  - Wallet ID (PPW-XXXXXXXX), Display Name, Balance
- *  - Create wallet form
- *  - Top-up via simulated UPI PIN entry (demo)
- *  - Transaction history from localStorage
+ * - Create wallet (localStorage)
+ * - Top-up via Razorpay Checkout (test mode)
+ *   POST /api/wallet/topup → Razorpay order → checkout → webhook credits DB
+ *   Optimistic local update so UI feels instant
+ * - Transaction history
  */
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wallet, Plus, ArrowDownLeft, ArrowUpRight, RefreshCw, Loader2, CheckCircle2, Smartphone } from "lucide-react";
+import {
+    Wallet, Plus, ArrowDownLeft, ArrowUpRight,
+    RefreshCw, Loader2, CreditCard,
+} from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import walletService, { WalletData, WalletTx } from "@/services/walletService";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const RZP_KEY = import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_SLAzRB6IuBdDcI";
+
+declare global { interface Window { Razorpay: any; } }
+
+function loadRazorpay(): Promise<boolean> {
+    return new Promise(resolve => {
+        if (window.Razorpay) return resolve(true);
+        const s = document.createElement("script");
+        s.src = "https://checkout.razorpay.com/v1/checkout.js";
+        s.onload = () => resolve(true);
+        s.onerror = () => resolve(false);
+        document.body.appendChild(s);
+    });
+}
 
 function formatPaise(paise: number) {
     return `₹${(paise / 100).toFixed(2)}`;
@@ -30,17 +49,11 @@ export default function WalletPage() {
     const [showTopup, setShowTopup] = useState(false);
     const [displayName, setDisplayName] = useState("");
     const [topupAmount, setTopupAmount] = useState("100");
-
-    // Simulated PIN entry state
-    const [showPinUI, setShowPinUI] = useState(false);
-    const [pin, setPin] = useState("");
-    const [pinVerifying, setPinVerifying] = useState(false);
+    const [topupLoading, setTopupLoading] = useState(false);
 
     const userId = user?.id || "user_demo_customer";
 
-    useEffect(() => {
-        loadWallet();
-    }, [userId]);
+    useEffect(() => { loadWallet(); }, [userId]);
 
     function loadWallet() {
         setLoading(true);
@@ -75,35 +88,61 @@ export default function WalletPage() {
         }
     }
 
-    // Simulated UPI PIN flow for demo top-up
-    function simulateUPITopup() {
-        setShowPinUI(true);
-        setPin("");
-    }
-
-    async function submitPin() {
-        if (pin.length < 4) {
-            toast({ title: "Enter 4-digit UPI PIN", variant: "destructive" });
-            return;
+    async function handleRazorpayTopup() {
+        const amountPaise = Math.round(parseFloat(topupAmount) * 100);
+        if (isNaN(amountPaise) || amountPaise < 100) {
+            toast({ title: "Minimum top-up is ₹1", variant: "destructive" }); return;
         }
-        setPinVerifying(true);
-        // Simulate bank verification delay
-        await new Promise(r => setTimeout(r, 2000));
-        setPinVerifying(false);
-        setShowPinUI(false);
-
+        setTopupLoading(true);
         try {
-            const amountPaise = Math.round(parseFloat(topupAmount) * 100);
-            if (isNaN(amountPaise) || amountPaise < 100) {
-                throw new Error("Minimum top-up is ₹1");
-            }
-            const updated = walletService.topUp(userId, amountPaise);
-            setWallet(updated);
-            setTransactions(walletService.getTransactions(userId));
-            toast({ title: `✅ ₹${topupAmount} added to wallet!`, description: `New balance: ${formatPaise(updated.balance_paise)}` });
-            setShowTopup(false);
+            // 1. Create order on backend
+            const res = await fetch(`${API_URL}/api/wallet/topup`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ userId, amountINR: topupAmount }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Could not create topup order");
+
+            // 2. Load Razorpay checkout script
+            const loaded = await loadRazorpay();
+            if (!loaded) throw new Error("Razorpay failed to load");
+
+            // 3. Open checkout
+            await new Promise<void>(resolve => {
+                const rzp = new window.Razorpay({
+                    key: RZP_KEY,
+                    order_id: data.order.id,
+                    amount: data.order.amount,
+                    currency: "INR",
+                    name: "Pulse Pay Wallet",
+                    description: `Top-up ₹${topupAmount}`,
+                    theme: { color: "#6366f1" },
+                    handler: (_: any) => {
+                        // Optimistic local update — webhook will also credit DB wallet
+                        const updated = walletService.topUp(userId, amountPaise);
+                        setWallet(updated);
+                        setTransactions(walletService.getTransactions(userId));
+                        toast({
+                            title: `✅ ₹${topupAmount} added!`,
+                            description: `New balance: ${formatPaise(updated.balance_paise)}`,
+                        });
+                        setShowTopup(false);
+                        resolve();
+                    },
+                    modal: {
+                        ondismiss: () => {
+                            toast({ title: "Topup cancelled", variant: "destructive" });
+                            resolve();
+                        },
+                    },
+                });
+                rzp.open();
+            });
         } catch (err: any) {
             toast({ title: "Error", description: err.message, variant: "destructive" });
+        } finally {
+            setTopupLoading(false);
         }
     }
 
@@ -129,23 +168,20 @@ export default function WalletPage() {
 
             {loading && <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading wallet…</div>}
 
-            {/* No wallet — create flow */}
+            {/* Create Wallet */}
             <AnimatePresence>
                 {!loading && !wallet && showCreate && (
                     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass rounded-2xl p-8 neon-border">
                         <h3 className="mb-2 font-display text-xl font-bold text-foreground">Create Your Wallet</h3>
-                        <p className="mb-6 text-sm text-muted-foreground">Choose a display name and create your Pulse Pay wallet (ID: PPW-XXXXXXXX)</p>
-
+                        <p className="mb-6 text-sm text-muted-foreground">Choose a display name and create your Pulse Pay wallet</p>
                         <div className="mb-4">
                             <label className="mb-1 block text-xs text-muted-foreground">Display Name (optional)</label>
                             <input
-                                value={displayName}
-                                onChange={e => setDisplayName(e.target.value)}
+                                value={displayName} onChange={e => setDisplayName(e.target.value)}
                                 placeholder="e.g. Aarav's Wallet"
                                 className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none"
                             />
                         </div>
-
                         <button
                             onClick={handleCreateWallet} disabled={creating}
                             className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50"
@@ -160,9 +196,7 @@ export default function WalletPage() {
             {/* Wallet Card */}
             {wallet && (
                 <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="glass rounded-2xl p-6 neon-border relative overflow-hidden">
-                    {/* BG pattern */}
                     <div className="absolute inset-0 opacity-5 bg-gradient-to-br from-primary to-purple-600 pointer-events-none" />
-
                     <div className="relative">
                         <div className="flex items-start justify-between mb-4">
                             <div>
@@ -174,12 +208,10 @@ export default function WalletPage() {
                                 <Wallet className="h-6 w-6 text-primary" />
                             </div>
                         </div>
-
                         <div className="mb-4">
                             <p className="text-xs text-muted-foreground">Available Balance</p>
                             <p className="font-display text-4xl font-bold text-gradient">{formatPaise(wallet.balance_paise)}</p>
                         </div>
-
                         <div className="flex gap-3">
                             <button onClick={() => setShowTopup(true)} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground hover:neon-glow">
                                 <Plus className="h-4 w-4" />Add Money
@@ -198,92 +230,43 @@ export default function WalletPage() {
                     <motion.div
                         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                         className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-                        onClick={e => { if (e.target === e.currentTarget) { setShowTopup(false); setShowPinUI(false); } }}
+                        onClick={e => { if (e.target === e.currentTarget) setShowTopup(false); }}
                     >
                         <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-sm glass rounded-2xl p-6">
-                            {showPinUI ? (
-                                /* ── Simulated UPI PIN Entry ── */
-                                <div className="text-center">
-                                    <div className="mb-4 flex justify-center">
-                                        <div className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-500/20">
-                                            <Smartphone className="h-8 w-8 text-blue-400" />
-                                        </div>
-                                    </div>
-                                    <h3 className="mb-1 font-display text-lg font-bold text-foreground">Enter UPI PIN</h3>
-                                    <p className="mb-2 text-xs text-muted-foreground">Authenticating with your bank</p>
-                                    <p className="mb-4 text-sm font-medium text-foreground">₹{topupAmount} → Pulse Pay Wallet</p>
+                            <h3 className="mb-4 font-display text-xl font-bold text-foreground">Add Money to Wallet</h3>
 
-                                    {/* PIN dots */}
-                                    <div className="flex items-center justify-center gap-3 mb-6">
-                                        {[0, 1, 2, 3, 4, 5].map(i => (
-                                            <div key={i} className={`h-4 w-4 rounded-full border-2 transition-all ${i < pin.length ? "bg-primary border-primary scale-110" : "border-muted-foreground"
-                                                }`} />
-                                        ))}
-                                    </div>
-
-                                    {/* Numeric keypad */}
-                                    <div className="grid grid-cols-3 gap-2 mb-4 max-w-xs mx-auto">
-                                        {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map((k, i) => (
-                                            <button
-                                                key={i}
-                                                disabled={pinVerifying}
-                                                onClick={() => {
-                                                    if (k === "⌫") setPin(p => p.slice(0, -1));
-                                                    else if (k && pin.length < 6) setPin(p => p + k);
-                                                }}
-                                                className={`rounded-xl py-3 text-lg font-semibold transition-all ${k ? "bg-secondary hover:bg-primary/20 text-foreground" : "opacity-0"}`}
-                                            >{k}</button>
-                                        ))}
-                                    </div>
-
-                                    <button
-                                        onClick={submitPin} disabled={pinVerifying || pin.length < 4}
-                                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 font-bold text-white hover:bg-blue-500 disabled:opacity-50"
-                                    >
-                                        {pinVerifying ? <><Loader2 className="h-4 w-4 animate-spin" />Verifying…</> : <><CheckCircle2 className="h-4 w-4" />Confirm Payment</>}
-                                    </button>
-                                </div>
-                            ) : (
-                                /* ── Top-up Options ── */
-                                <>
-                                    <h3 className="mb-4 font-display text-xl font-bold text-foreground">Add Money to Wallet</h3>
-
-                                    <div className="mb-4">
-                                        <label className="mb-1 block text-xs text-muted-foreground">Amount (INR)</label>
-                                        <input
-                                            type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)}
-                                            className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-lg font-bold text-foreground focus:border-primary focus:outline-none"
-                                            placeholder="100"
-                                        />
-                                        <div className="mt-2 flex gap-2">
-                                            {["50", "100", "200", "500"].map(a => (
-                                                <button key={a} onClick={() => setTopupAmount(a)} className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${topupAmount === a ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>₹{a}</button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    <p className="mb-3 text-xs text-muted-foreground font-medium uppercase tracking-wide">Pay with</p>
-                                    <div className="space-y-3 mb-4">
-                                        {/* Demo UPI PIN simulation */}
-                                        <button
-                                            onClick={simulateUPITopup}
-                                            className="flex w-full items-center gap-4 rounded-xl border border-blue-500/30 bg-blue-500/5 p-4 text-left transition hover:bg-blue-500/10"
-                                        >
-                                            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-500/20">
-                                                <Smartphone className="h-5 w-5 text-blue-400" />
-                                            </div>
-                                            <div>
-                                                <p className="font-semibold text-foreground text-sm">UPI Payment (Demo)</p>
-                                                <p className="text-xs text-muted-foreground">Enter any 4+ digit PIN to confirm</p>
-                                            </div>
+                            <div className="mb-4">
+                                <label className="mb-1 block text-xs text-muted-foreground">Amount (INR)</label>
+                                <input
+                                    type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)}
+                                    className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-lg font-bold text-foreground focus:border-primary focus:outline-none"
+                                    placeholder="100"
+                                />
+                                <div className="mt-2 flex gap-2">
+                                    {["50", "100", "200", "500"].map(a => (
+                                        <button key={a} onClick={() => setTopupAmount(a)}
+                                            className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${topupAmount === a ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}>
+                                            ₹{a}
                                         </button>
-                                    </div>
+                                    ))}
+                                </div>
+                            </div>
 
-                                    <button onClick={() => setShowTopup(false)} className="w-full rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:text-foreground">
-                                        Cancel
-                                    </button>
-                                </>
-                            )}
+                            <button
+                                onClick={handleRazorpayTopup} disabled={topupLoading}
+                                className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50"
+                            >
+                                {topupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+                                Pay ₹{topupAmount} via Razorpay
+                            </button>
+
+                            <p className="mt-3 text-center text-xs text-muted-foreground">
+                                Test Mode · Card: <code className="rounded bg-muted px-1">4111 1111 1111 1111</code> · CVV: any · Expiry: any future
+                            </p>
+
+                            <button onClick={() => setShowTopup(false)} className="mt-3 w-full rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:text-foreground">
+                                Cancel
+                            </button>
                         </motion.div>
                     </motion.div>
                 )}
