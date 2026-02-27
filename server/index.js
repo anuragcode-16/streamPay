@@ -1,5 +1,5 @@
 /**
- * index.js — Pulse Pay Express Server (FULL MVP)
+ * index.js — Steam Pay Express Server (FULL MVP)
  *
  * APIs:
  *  Session lifecycle:
@@ -95,7 +95,7 @@ function haversine(lat1, lng1, lat2, lng2) {
 }
 
 // ─── Health & Root ─────────────────────────────────────────────────────────────
-app.get("/", (_, res) => res.send(`<h2>Pulse Pay Backend is running! 🚀</h2><p>API endpoints are active.</p>`));
+app.get("/", (_, res) => res.send(`<h2>Steam Pay Backend is running! 🚀</h2><p>API endpoints are active.</p>`));
 app.get("/health", (_, res) => res.json({ ok: true, ts: new Date().toISOString() }));
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -675,6 +675,6 @@ app.post("/api/webhook/razorpay", async (req, res) => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-    console.log(`\n🚀 Pulse Pay server → http://localhost:${PORT}`);
+    console.log(`\n🚀 Steam Pay server → http://localhost:${PORT}`);
     console.log(`   Tick: ${process.env.TICK_INTERVAL_MS || 1000}ms | CORS: ${FRONTEND_URL}\n`);
 });

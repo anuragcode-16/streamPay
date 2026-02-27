@@ -1,5 +1,5 @@
 /**
- * worker.js — Pulse Pay streaming debit worker (Full MVP)
+ * worker.js — Steam Pay streaming debit worker (Full MVP)
  *
  * Runs every TICK_INTERVAL_MS. For each active session:
  *  1. Compute debitPaise (integer, no floats)

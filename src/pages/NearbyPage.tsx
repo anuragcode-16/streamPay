@@ -154,7 +154,7 @@ function generateNearbyMerchants(lat: number, lng: number, radiusKm: number): De
                 distanceKm: Math.round(haversine(lat, lng, mLat, mLng) * 100) / 100,
                 rating,
                 openNow: rng() > 0.15,
-                description: `A premium ${template.service_type} facility located at ${template.locations[locIdx]}. Pay-as-you-use directly via Pulse Pay wallet without any upfront commitments.`,
+                description: `A premium ${template.service_type} facility located at ${template.locations[locIdx]}. Pay-as-you-use directly via Steam Pay wallet without any upfront commitments.`,
                 reviews
             });
         }

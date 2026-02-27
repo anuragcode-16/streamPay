@@ -85,7 +85,7 @@ export default function PaymentChoiceModal({ stopData, userId, onClose }: Paymen
                     order_id: data.order.id,
                     amount: data.amountPaise,
                     currency: "INR",
-                    name: "Pulse Pay",
+                    name: "Steam Pay",
                     description: `Session #${session.id?.slice(0, 8)}`,
                     prefill: { email: "" },
                     theme: { color: "#6366f1" },

@@ -117,7 +117,7 @@ export default function QRScan() {
                         order_id: order.id,
                         amount: order.amount,
                         currency: "INR",
-                        name: "Pulse Pay",
+                        name: "Steam Pay",
                         description: `Session #${session?.id?.slice(0, 8)}`,
                         theme: { color: "#6366f1" },
                         handler: (response: any) => {

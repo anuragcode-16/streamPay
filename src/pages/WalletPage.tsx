@@ -105,7 +105,7 @@ export default function WalletPage() {
                     key: RZP_KEY,
                     amount: amountPaise,
                     currency: "INR",
-                    name: "Pulse Pay Wallet",
+                    name: "Steam Pay Wallet",
                     description: `Wallet Top-up ₹${topupAmount}`,
                     theme: { color: "#6366f1" },
                     handler: (_response: any) => {
@@ -163,7 +163,7 @@ export default function WalletPage() {
                 {!loading && !wallet && showCreate && (
                     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass rounded-2xl p-8 neon-border">
                         <h3 className="mb-2 font-display text-xl font-bold text-foreground">Create Your Wallet</h3>
-                        <p className="mb-6 text-sm text-muted-foreground">Choose a display name and create your Pulse Pay wallet</p>
+                        <p className="mb-6 text-sm text-muted-foreground">Choose a display name and create your Steam Pay wallet</p>
                         <div className="mb-4">
                             <label className="mb-1 block text-xs text-muted-foreground">Display Name (optional)</label>
                             <input
@@ -190,7 +190,7 @@ export default function WalletPage() {
                     <div className="relative">
                         <div className="flex items-start justify-between mb-4">
                             <div>
-                                <p className="text-xs text-muted-foreground uppercase tracking-widest">Pulse Pay Wallet</p>
+                                <p className="text-xs text-muted-foreground uppercase tracking-widest">Steam Pay Wallet</p>
                                 <p className="font-mono text-lg font-bold text-primary mt-1">{wallet.wallet_id}</p>
                                 <p className="text-sm text-muted-foreground">{wallet.display_name}</p>
                             </div>

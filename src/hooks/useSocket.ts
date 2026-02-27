@@ -1,5 +1,5 @@
 /**
- * useSocket.ts — Reusable Socket.IO hook for Pulse Pay
+ * useSocket.ts — Reusable Socket.IO hook for Steam Pay
  *
  * Connects to the backend server and joins the appropriate room
  * (merchant:{id} or user:{id}) so the component receives real-time events.

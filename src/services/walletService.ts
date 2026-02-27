@@ -1,5 +1,5 @@
 /**
- * walletService.ts — localStorage-backed wallet for Pulse Pay
+ * walletService.ts — localStorage-backed wallet for Steam Pay
  *
  * Provides create, topUp, debit, getBalance, and getTransactions
  * without needing a backend database connection.

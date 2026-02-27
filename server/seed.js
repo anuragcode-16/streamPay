@@ -1,5 +1,5 @@
 /**
- * seed.js — Pulse Pay Full MVP Seed Script
+ * seed.js — Steam Pay Full MVP Seed Script
  *
  * Creates:
  *  - Demo customer (user_demo_customer) with PPW-DEMO0001 wallet (₹100)
@@ -13,14 +13,14 @@ require("dotenv").config();
 const db = require("./db");
 
 async function seed() {
-  console.log("🌱 Seeding Pulse Pay demo data…\n");
+  console.log("🌱 Seeding Steam Pay demo data…\n");
 
   try {
     // ── Users ─────────────────────────────────────────────────────────────
     await db.query(`
       INSERT INTO users (id, name, email, role) VALUES
-        ('user_demo_customer', 'Aarav Kumar',  'customer@pulsepay.test', 'customer'),
-        ('user_demo_merchant', 'Riya Sharma',  'merchant@pulsepay.test', 'merchant')
+        ('user_demo_customer', 'Aarav Kumar',  'customer@STEAMPAY.test', 'customer'),
+        ('user_demo_merchant', 'Riya Sharma',  'merchant@STEAMPAY.test', 'merchant')
       ON CONFLICT (id) DO NOTHING
     `);
     console.log("✅ Users seeded");
@@ -75,8 +75,8 @@ async function seed() {
     console.log("\n  Scan URL: /scan?payload=" + stopQR);
     console.log("\n🎉 Seeding complete! Ready to demo.");
     console.log("\nDemo credentials:");
-    console.log("  Customer: customer@pulsepay.test | Wallet: PPW-DEMO0001 | Balance: ₹100");
-    console.log("  Merchant: merchant@pulsepay.test | ID: m_demo_gym001");
+    console.log("  Customer: customer@STEAMPAY.test | Wallet: PPW-DEMO0001 | Balance: ₹100");
+    console.log("  Merchant: merchant@STEAMPAY.test | ID: m_demo_gym001");
   } catch (err) {
     console.error("❌ Seed error:", err.message);
     console.error("  Make sure DATABASE_URL is set in server/.env and schema has been run.");

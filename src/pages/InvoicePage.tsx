@@ -165,7 +165,7 @@ export default function InvoicePage() {
 
                 {/* Footer */}
                 <div className="mt-6 pt-4 border-t border-border text-center">
-                    <p className="text-xs text-muted-foreground">Thank you for using Pulse Pay · pulsepay.test</p>
+                    <p className="text-xs text-muted-foreground">Thank you for using Steam Pay · STEAMPAY.test</p>
                     <p className="text-xs text-muted-foreground mt-0.5">This is a computer-generated invoice. No signature required.</p>
                 </div>
             </div>
