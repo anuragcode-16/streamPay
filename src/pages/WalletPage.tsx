@@ -95,31 +95,21 @@ export default function WalletPage() {
         }
         setTopupLoading(true);
         try {
-            // 1. Create order on backend
-            const res = await fetch(`${API_URL}/api/wallet/topup`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId, amountINR: topupAmount }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.error || "Could not create topup order");
-
-            // 2. Load Razorpay checkout script
+            // Load Razorpay script
             const loaded = await loadRazorpay();
             if (!loaded) throw new Error("Razorpay failed to load");
 
-            // 3. Open checkout
+            // Open Razorpay directly with amount — no backend order needed in test mode
             await new Promise<void>(resolve => {
                 const rzp = new window.Razorpay({
                     key: RZP_KEY,
-                    order_id: data.order.id,
-                    amount: data.order.amount,
+                    amount: amountPaise,
                     currency: "INR",
                     name: "Pulse Pay Wallet",
-                    description: `Top-up ₹${topupAmount}`,
+                    description: `Wallet Top-up ₹${topupAmount}`,
                     theme: { color: "#6366f1" },
-                    handler: (_: any) => {
-                        // Optimistic local update — webhook will also credit DB wallet
+                    handler: (_response: any) => {
+                        // Credit wallet locally on payment success
                         const updated = walletService.topUp(userId, amountPaise);
                         setWallet(updated);
                         setTransactions(walletService.getTransactions(userId));
