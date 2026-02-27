@@ -20,9 +20,11 @@ import QRCode from "react-qr-code";
 import {
   Zap, BarChart3, Activity, Settings, LogOut, DollarSign, Plus,
   QrCode, Loader2, CheckCircle2, PauseCircle, AlertTriangle,
-  Users, Megaphone, Wrench, X, LineChart,
+  Users, Megaphone, Wrench, X, LineChart, Bot, Receipt,
 } from "lucide-react";
 import AnalyticsDashboard from "@/components/analytics/AnalyticsDashboard";
+import TaxAdvisorChat from "@/components/analytics/TaxAdvisorChat";
+import { merchantPayments } from "@/data/merchantPayments";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
@@ -269,7 +271,8 @@ export default function MerchantDashboard() {
     { id: "services", label: "Services", icon: Wrench },
     { id: "ads", label: "Ads", icon: Megaphone },
     { id: "qr", label: "QR Codes", icon: QrCode },
-    { id: "payments", label: "Payments", icon: DollarSign },
+    { id: "payments", label: "Payments", icon: Receipt },
+    { id: "tax", label: "Tax Advisor", icon: Bot },
   ];
 
   return (
@@ -535,35 +538,86 @@ export default function MerchantDashboard() {
             </div>
           )}
 
-          {/* ── PAYMENTS ───────────────────────────────────────────────────── */}
+          {/* ── PAYMENTS ────────────────────────────────────────────────────── */}
           {tab === "payments" && (
             <div className="space-y-4">
-              <h2 className="font-display text-2xl font-bold text-foreground">Payments Received</h2>
-              {payments.length === 0 ? (
-                <div className="glass rounded-2xl p-10 text-center text-muted-foreground">
-                  <DollarSign className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                  <p>Payments appear here after a session is settled.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {payments.map((p, i) => (
-                    <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                      className="flex items-center justify-between rounded-2xl glass px-5 py-4">
-                      <div className="flex items-center gap-3">
-                        <CheckCircle2 className="h-5 w-5 text-green-400" />
-                        <div>
-                          <p className="text-sm font-medium text-foreground">Payment via {p.method}</p>
-                          <p className="font-mono text-xs text-muted-foreground">{p.paymentId}</p>
-                        </div>
+              <div className="flex items-center justify-between">
+                <h2 className="font-display text-2xl font-bold text-foreground">Payments &amp; GST Ledger</h2>
+                <button onClick={() => setTab("tax")} className="flex items-center gap-2 rounded-xl bg-primary/10 border border-primary/30 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/20">
+                  <Bot className="h-4 w-4" />Tax Advisor AI
+                </button>
+              </div>
+
+              {/* GST summary strip */}
+              {(() => {
+                const p500 = merchantPayments.filter(p => p.status === "paid");
+                const totalBill = p500.reduce((s, p) => s + p.amountINR, 0);
+                const totalGST = p500.reduce((s, p) => s + p.gstAmountINR, 0);
+                const totalBase = p500.reduce((s, p) => s + p.baseAmountINR, 0);
+                return (
+                  <div className="grid grid-cols-3 gap-3">
+                    {[
+                      { label: "Total Billed (incl. GST)", value: `₹${totalBill.toFixed(0)}` },
+                      { label: "GST Collected", value: `₹${totalGST.toFixed(0)}` },
+                      { label: "Net Revenue", value: `₹${totalBase.toFixed(0)}` },
+                    ].map(k => (
+                      <div key={k.label} className="glass rounded-2xl p-4 text-center">
+                        <p className="font-display text-xl font-bold text-primary">{k.value}</p>
+                        <p className="text-xs text-muted-foreground">{k.label}</p>
                       </div>
-                      <div className="text-right">
-                        <p className="font-display text-xl font-bold text-green-400">{formatPaise(p.amountPaise)}</p>
-                        <p className="text-xs text-muted-foreground">{new Date(p.receivedAt).toLocaleTimeString()}</p>
-                      </div>
-                    </motion.div>
-                  ))}
+                    ))}
+                  </div>
+                );
+              })()}
+
+              {/* 500 payment records table */}
+              <div className="glass rounded-2xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="border-b border-border bg-secondary/40">
+                      <tr>
+                        {["Date", "Service", "HSN", "Base (₹)", "GST%", "GST (₹)", "Total (₹)", "Method", "Status"].map(h => (
+                          <th key={h} className="px-3 py-3 text-left font-semibold text-muted-foreground">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {merchantPayments.slice(0, 50).map((p, i) => (
+                        <tr key={p.id} className={`border-b border-border/40 hover:bg-secondary/30 ${i % 2 === 0 ? "" : "bg-secondary/10"}`}>
+                          <td className="px-3 py-2 text-muted-foreground">{p.date.slice(0, 10)}</td>
+                          <td className="px-3 py-2 font-medium capitalize">{p.serviceType}</td>
+                          <td className="px-3 py-2 font-mono text-muted-foreground">{p.hsn}</td>
+                          <td className="px-3 py-2">{p.baseAmountINR.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-blue-400">{p.gstRate}%</td>
+                          <td className="px-3 py-2 text-blue-400">{p.gstAmountINR.toFixed(2)}</td>
+                          <td className="px-3 py-2 font-bold text-green-400">{p.amountINR.toFixed(2)}</td>
+                          <td className="px-3 py-2 capitalize">{p.paymentMethod}</td>
+                          <td className="px-3 py-2">
+                            <span className={`rounded-full px-2 py-0.5 font-semibold ${p.status === "paid" ? "bg-green-500/15 text-green-400" :
+                              p.status === "refunded" ? "bg-red-500/15 text-red-400" :
+                                "bg-yellow-500/15 text-yellow-400"
+                              }`}>{p.status}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              )}
+                <div className="p-3 text-center text-xs text-muted-foreground border-t border-border">
+                  Showing 50 of 500 records &middot; <button className="text-primary hover:underline" onClick={() => setTab("tax")}>Ask Tax Advisor AI for full analysis →</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── TAX ADVISOR ────────────────────────────────────────────── */}
+          {tab === "tax" && (
+            <div className="space-y-4">
+              <div>
+                <h2 className="font-display text-2xl font-bold text-foreground">Tax Advisor AI</h2>
+                <p className="text-sm text-muted-foreground">Powered by Gemini · Indian GST · ITR · TDS · MSME Compliance</p>
+              </div>
+              <TaxAdvisorChat />
             </div>
           )}
         </motion.div>
