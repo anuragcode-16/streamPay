@@ -680,7 +680,7 @@ export default function MerchantDashboard() {
 
 
           {/* ── ANALYTICS ──────────────────────────────────────────────────── */}
-          {tab === "analytics" && <AnalyticsDashboard />}
+          {tab === "analytics" && <AnalyticsDashboard payments={payments} liveSessions={liveSessions} />}
 
           {/* ── SESSIONS ───────────────────────────────────────────────────── */}
           {tab === "sessions" && (

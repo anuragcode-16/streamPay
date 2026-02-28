@@ -18,8 +18,11 @@ import {
 } from "lucide-react";
 import { merchantPayments, MerchantPayment } from "@/data/merchantPayments";
 
-const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+const OPENROUTER_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
+const BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
+// Primary: Llama 3 70B
+const PRIMARY_MODEL = "meta-llama/llama-3-70b-instruct";
+const FALLBACK_MODEL = "meta-llama/llama-3-8b-instruct:free";
 
 // ── Compute summary from the 500 records ─────────────────────────────────────
 function computeSummary(payments: MerchantPayment[]) {
@@ -114,12 +117,36 @@ interface Message {
     role: "user" | "assistant";
     content: string;
     timestamp: Date;
+    model?: string;      // which Gemini model answered (shown in bubble footer)
+}
+
+// ── Call OpenRouter with a given model, throws on non-200 ─────────────────────
+async function callOpenRouter(model: string, messages: any[]): Promise<string> {
+    const res = await fetch(BASE_URL, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${OPENROUTER_KEY}`
+        },
+        body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.4,
+            max_tokens: 1024,
+            top_p: 0.8
+        }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || `${model} error ${res.status}`);
+    const text = data?.choices?.[0]?.message?.content;
+    if (!text) throw new Error("Empty response from " + model);
+    return text;
 }
 
 export default function TaxAdvisorChat() {
     const [messages, setMessages] = useState<Message[]>([{
         role: "assistant",
-        content: `👋 Namaste! I'm your **Indian Tax Compliance Advisor** powered by Gemini AI.\n\nI've analysed your **${summary.count} paid transactions** from FY 2024-25:\n- 💰 Gross Revenue: **₹${summary.totalBill.toFixed(0)}**\n- 🏛️ GST Collected: **₹${summary.totalGST.toFixed(0)}**\n- 📊 Net Revenue: **₹${summary.totalRev.toFixed(0)}**\n\nAsk me anything about GST filing, ITR, TDS, or how to legally minimize your tax!`,
+        content: `👋 Namaste! I'm your **Indian Tax Compliance Advisor** powered by Llama 3 AI.\n\nI've analysed your **${summary.count} paid transactions** from FY 2024-25:\n- 💰 Gross Revenue: **₹${summary.totalBill.toFixed(0)}**\n- 🏛️ GST Collected: **₹${summary.totalGST.toFixed(0)}**\n- 📊 Net Revenue: **₹${summary.totalRev.toFixed(0)}**\n\nAsk me anything about GST filing, ITR, TDS, or how to legally minimize your tax!`,
         timestamp: new Date(),
     }]);
     const [input, setInput] = useState("");
@@ -141,53 +168,49 @@ export default function TaxAdvisorChat() {
         setLoading(true);
 
         try {
-            // Build conversation history for Gemini
+            // Build conversation history for OpenRouter API
             const history = messages.map(m => ({
-                role: m.role === "user" ? "user" : "model",
-                parts: [{ text: m.content }],
+                role: m.role, // role maps perfectly (user/assistant)
+                content: m.content
             }));
 
-            const body = {
-                system_instruction: { parts: [{ text: buildSystemPrompt() }] },
-                contents: [
-                    ...history,
-                    { role: "user", parts: [{ text: msg }] },
-                ],
-                generationConfig: {
-                    temperature: 0.4,
-                    maxOutputTokens: 1024,
-                    topP: 0.8,
-                },
-                safetySettings: [
-                    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-                    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-                    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-                    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_MEDIUM_AND_ABOVE" },
-                ],
-            };
+            const apiMessages = [
+                { role: "system", content: buildSystemPrompt() },
+                ...history,
+                { role: "user", content: msg }
+            ];
 
-            const res = await fetch(GEMINI_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(body),
-            });
-            const data = await res.json();
-
-            if (!res.ok) {
-                const errMsg = data?.error?.message || "Gemini API error";
-                throw new Error(errMsg);
+            // ── Primary → Fallback chain ──────────────────────────────────────
+            let reply = "";
+            let usedModel = PRIMARY_MODEL;
+            try {
+                reply = await callOpenRouter(PRIMARY_MODEL, apiMessages);
+            } catch (primaryErr: any) {
+                console.warn(`[TaxAdvisor] Primary (${PRIMARY_MODEL}) failed: ${primaryErr.message}. Trying fallback…`);
+                usedModel = FALLBACK_MODEL;
+                reply = await callOpenRouter(FALLBACK_MODEL, apiMessages);
             }
 
-            const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text
-                || "I couldn't generate a response. Please try again.";
-
-            setMessages(prev => [...prev, { role: "assistant", content: reply, timestamp: new Date() }]);
+            setMessages(prev => [...prev, { role: "assistant", content: reply, timestamp: new Date(), model: usedModel }]);
         } catch (err: any) {
-            setMessages(prev => [...prev, {
-                role: "assistant",
-                content: `⚠️ Error: ${err.message}. Please check your API key or try again.`,
-                timestamp: new Date(),
-            }]);
+            const isLeaked = err.message?.toLowerCase().includes("leaked") || err.message?.toLowerCase().includes("key") || err.message?.toLowerCase().includes("401");
+
+            if (isLeaked) {
+                // Graceful fallback for demo when API key is dead
+                const demoReply = `Based on your records, you have collected **₹${(summary.totalGST).toFixed(0)} in GST** this year across ${summary.count} transactions. 
+                
+You should file **GSTR-3B by the 20th** of next month to avoid late fees. Remember that you can claim Input Tax Credit on your gym equipment purchases!
+                
+*(Simulated response: Your API Key was rejected or rate limited. Please try again or add a new key in .env to restore live AI.)*`;
+
+                setMessages(prev => [...prev, { role: "assistant", content: demoReply, timestamp: new Date(), model: "Fallback Simulator" }]);
+            } else {
+                setMessages(prev => [...prev, {
+                    role: "assistant",
+                    content: `⚠️ Error: ${err.message}. Please check your API key or try again.`,
+                    timestamp: new Date(),
+                }]);
+            }
         } finally {
             setLoading(false);
         }
@@ -265,12 +288,13 @@ export default function TaxAdvisorChat() {
 
                             {/* Bubble */}
                             <div className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${msg.role === "assistant"
-                                    ? "bg-card border border-border text-foreground rounded-tl-none"
-                                    : "bg-primary text-primary-foreground rounded-tr-none"
+                                ? "bg-card border border-border text-foreground rounded-tl-none"
+                                : "bg-primary text-primary-foreground rounded-tr-none"
                                 }`}>
                                 {msg.role === "assistant" ? renderMarkdown(msg.content) : <p>{msg.content}</p>}
                                 <p className={`mt-2 text-xs ${msg.role === "assistant" ? "text-muted-foreground" : "text-primary-foreground/60"}`}>
                                     {msg.timestamp.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                                    {msg.model && <span className="ml-2 opacity-60">· {msg.model}</span>}
                                 </p>
                             </div>
                         </motion.div>

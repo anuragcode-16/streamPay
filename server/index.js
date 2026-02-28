@@ -201,6 +201,10 @@ io.on("connection", (socket) => {
         console.log(`[Socket] User joining room: user:${id}`);
         socket.join(`user:${id}`);
     });
+    socket.on("join:ads", () => {
+        console.log(`[Socket] Customer joining ads broadcast room`);
+        socket.join("ads");
+    });
     socket.on("disconnect", () => {
         console.log(`[Socket] Client disconnected: ${socket.id}`);
     });
@@ -566,12 +570,17 @@ app.post("/api/ads", async (req, res) => {
                 `INSERT INTO advertisements (id, merchant_id, title, body, image_url, active) VALUES ($1, $2, $3, $4, $5, true) RETURNING *`,
                 [uuidv4(), merchantId, title, body || "", imageUrl || ""]
             );
-            return res.json({ ad: result.rows[0] });
+            const ad = result.rows[0];
+            // Broadcast to ALL connected customers
+            io.to("ads").emit("ad:new", ad);
+            return res.json({ ad });
         } catch (err) { console.warn("[ads/create] DB error:", err.message); }
     }
-    const ad = { id: uuidv4(), merchant_id: merchantId, title, body: body || "", image_url: imageUrl || "", active: true };
+    const ad = { id: uuidv4(), merchant_id: merchantId, title, body: body || "", image_url: imageUrl || "", active: true, created_at: new Date().toISOString() };
     if (!memAds.has(merchantId)) memAds.set(merchantId, []);
     memAds.get(merchantId).unshift(ad);
+    // Broadcast to ALL connected customers
+    io.to("ads").emit("ad:new", ad);
     res.json({ ad });
 });
 
@@ -584,6 +593,21 @@ app.get("/api/ads/:merchantId", async (req, res) => {
     }
     res.json({ ads: memAds.get(req.params.merchantId) || [] });
 });
+
+// GET /api/ads/all — fetch all active ads across all merchants (customer portal initial load)
+app.get("/api/ads", async (req, res) => {
+    if (dbOnline) {
+        try {
+            const r = await db.query("SELECT * FROM advertisements WHERE active = true ORDER BY created_at DESC LIMIT 20");
+            return res.json({ ads: r.rows });
+        } catch (err) { console.warn("[ads/all] DB error:", err.message); }
+    }
+    const all = [];
+    for (const list of memAds.values()) all.push(...list);
+    all.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    res.json({ ads: all.slice(0, 20) });
+});
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // SESSION APIs

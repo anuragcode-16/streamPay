@@ -18,7 +18,7 @@ import { io, Socket } from "socket.io-client";
 import {
   Zap, Wallet, QrCode, MapPin, History, LogOut, Clock,
   AlertTriangle, CheckCircle2, Loader2, TrendingDown,
-  Download, Play, Square, CreditCard,
+  Download, Play, Square, CreditCard, Megaphone, X,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -65,6 +65,8 @@ export default function CustomerDashboard() {
   const [loadingTx, setLoadingTx] = useState(false);
   const [paying, setPaying] = useState(false);
   const [payingSessionId, setPayingSessionId] = useState<string | null>(null);
+  const [liveAds, setLiveAds] = useState<any[]>([]);
+  const [dismissedAds, setDismissedAds] = useState<Set<string>>(new Set());
 
   const socketRef = useRef<Socket | null>(null);
   const userId = user?.id || "user_demo_customer";
@@ -131,7 +133,14 @@ export default function CustomerDashboard() {
 
     socket.on("connect", () => {
       socket.emit("join:user", userId);
+      socket.emit("join:ads");  // Subscribe to live merchant ads
       console.log("[Customer] Socket connected, room: user:", userId);
+    });
+
+    // Live ad from merchant
+    socket.on("ad:new", (ad: any) => {
+      setLiveAds(prev => [ad, ...prev].slice(0, 5)); // keep newest 5
+      toast({ title: `📢 New Promotion from ${ad.merchant_id || "a merchant"}!`, description: ad.title });
     });
 
     // Session STARTED
@@ -205,6 +214,14 @@ export default function CustomerDashboard() {
 
     return () => { socket.disconnect(); };
   }, [userId]);
+
+  // ── Fetch existing ads on mount ──────────────────────────────────────────
+  useEffect(() => {
+    fetch(`${API_URL}/api/ads`)
+      .then(r => r.json())
+      .then(d => { if (d.ads?.length) setLiveAds(d.ads.slice(0, 5)); })
+      .catch(() => { });
+  }, []);
 
   // ── Local smooth timer for active session ────────────────────────────────
   useEffect(() => {
@@ -319,6 +336,49 @@ export default function CustomerDashboard() {
                 </h1>
                 <p className="text-sm text-muted-foreground">Pay as you use — in real time</p>
               </div>
+
+              {/* ── Live Ads Banner ──────────────────────────────── */}
+              <AnimatePresence>
+                {liveAds.filter(ad => !dismissedAds.has(ad.id)).length > 0 && (
+                  <div className="space-y-2">
+                    {liveAds.filter(ad => !dismissedAds.has(ad.id)).map(ad => (
+                      <motion.div
+                        key={ad.id}
+                        initial={{ opacity: 0, y: -12, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                        transition={{ duration: 0.25 }}
+                        className="relative rounded-2xl border border-primary/30 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent p-4 overflow-hidden"
+                      >
+                        {/* glow ring */}
+                        <div className="pointer-events-none absolute inset-0 rounded-2xl ring-1 ring-primary/20" />
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary/20">
+                            <Megaphone className="h-4 w-4 text-primary" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-semibold text-foreground text-sm">{ad.title}</p>
+                            {ad.body && <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{ad.body}</p>}
+                            {ad.image_url && (
+                              <img src={ad.image_url} alt={ad.title} className="mt-2 rounded-xl max-h-32 object-cover w-full" />
+                            )}
+                          </div>
+                          <button
+                            onClick={() => setDismissedAds(prev => new Set([...prev, ad.id]))}
+                            className="flex-shrink-0 rounded-full p-1 text-muted-foreground hover:text-foreground hover:bg-muted"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="mt-2 flex items-center gap-1.5">
+                          <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                          <span className="text-[10px] text-primary/70 font-medium tracking-wide">LIVE PROMOTION</span>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </AnimatePresence>
 
               {/* Payment processing indicator */}
               <AnimatePresence>

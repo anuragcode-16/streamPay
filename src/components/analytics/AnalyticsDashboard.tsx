@@ -11,6 +11,15 @@ import { motion } from "framer-motion";
 import { TrendingUp, Users, Clock, DollarSign, PieChart } from "lucide-react";
 import { transactions } from "@/data/merchantAnalytics";
 
+// Live data structures from MerchantDashboard
+interface Payment { sessionId: string; paymentId?: string; amountPaise: number; method: string; receivedAt: string; }
+interface LiveSession { userId: string; serviceType: string; elapsedSec: number; }
+
+export interface AnalyticsProps {
+    payments?: Payment[];
+    liveSessions?: Map<string, LiveSession>;
+}
+
 interface Transaction {
     id: string;
     date: string;
@@ -61,7 +70,7 @@ function bg(hex: string, a = 0.18) {
     return hex.replace("1)", `${a})`);
 }
 
-export default function AnalyticsDashboard() {
+export default function AnalyticsDashboard({ payments = [], liveSessions = new Map() }: AnalyticsProps) {
     const [isChartReady, setIsChartReady] = useState(false);
 
     useEffect(() => {
@@ -70,7 +79,25 @@ export default function AnalyticsDashboard() {
     }, []);
 
     try {
-        const data: Transaction[] = transactions;
+        const data = useMemo<Transaction[]>(() => {
+            const base = [...transactions];
+            payments.forEach(p => {
+                const ls = liveSessions.get(p.sessionId);
+                const ts = new Date(p.receivedAt);
+                base.push({
+                    id: p.paymentId || p.sessionId || Math.random().toString(),
+                    date: ts.toISOString().split("T")[0],
+                    hour: ts.getHours(),
+                    customerId: ls?.userId || "user_live",
+                    customerType: "new",
+                    serviceType: ls?.serviceType || "gym",
+                    durationMin: ls ? Math.max(1, Math.ceil(ls.elapsedSec / 60)) : 1,
+                    amountPaise: p.amountPaise,
+                    paymentMethod: p.method || "wallet",
+                });
+            });
+            return base;
+        }, [payments, liveSessions]);
 
         // ── KPI numbers ──────────────────────────────────────────────────────────────
         const kpis = useMemo(() => {
