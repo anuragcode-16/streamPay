@@ -1,16 +1,16 @@
 /**
- * CameraQR.tsx — Reliable QR Scanner (works on HTTP over LAN)
+ * CameraQR.tsx — Robust QR Scanner
  *
- * Scan method:
- *  - Tap "Scan QR Code" → phone's native camera opens (input[capture])
- *  - Photo is decoded via jsQR (canvas-based, zero DOM dependencies, HTTP-safe)
- *  - Fallback "Live Camera" mode for HTTPS contexts
- *  - Demo buttons for laptop testing
+ * Decoding strategy (phone photos often capture QR at low fraction of image):
+ *   • Load image at native resolution
+ *   • Try jsQR at 6 scales: 1x, 0.75x, 0.5x, 0.33x, 1.5x, 2x
+ *   • For each scale also try a centre-crop (middle 65% of frame)
+ *   • inversionAttempts: "attemptBoth" on every pass
+ *   → 12 total attempts → virtually always finds the QR
  *
  * Session flow:
- *  START QR scanned → POST /api/start-session
- *  STOP  QR scanned → POST /api/stop-session → POST /api/pay-wallet
- *                   → payment:success emitted to merchant + customer
+ *   START QR → POST /api/start-session → redirect /customer
+ *   STOP  QR → POST /api/stop-session → POST /api/pay-wallet → /customer
  */
 import { useState, useRef, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -18,7 +18,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import jsQR from "jsqr";
 import {
     Camera, QrCode, Play, Square, Loader2,
-    Zap, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw,
+    Zap, ArrowLeft, CheckCircle2, AlertCircle, RefreshCw, Info,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -30,105 +30,133 @@ const DEMO_SERVICE_TYPE = "gym";
 const startQRPayload = btoa(JSON.stringify({ merchantId: DEMO_MERCHANT_ID, serviceType: DEMO_SERVICE_TYPE, action: "start" }));
 const stopQRPayload = btoa(JSON.stringify({ merchantId: DEMO_MERCHANT_ID, serviceType: DEMO_SERVICE_TYPE, action: "stop" }));
 
-// Live camera needs secure context (HTTPS or localhost)
-const IS_SECURE = window.isSecureContext ||
+const IS_SECURE =
+    window.isSecureContext ||
     ["localhost", "127.0.0.1"].includes(window.location.hostname);
 
-// ── Decode QR from File using jsQR + Canvas ───────────────────────────────────
-function decodeQRFromFile(file: File): Promise<string> {
+// ─── jsQR decode helper (multi-scale + centre-crop) ────────────────────────
+function scanCanvas(canvas: HTMLCanvasElement): string | null {
+    const ctx = canvas.getContext("2d")!;
+    const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return jsQR(d.data, d.width, d.height, { inversionAttempts: "attemptBoth" })?.data ?? null;
+}
+
+function makeCanvas(img: HTMLImageElement, targetW: number, targetH: number): HTMLCanvasElement {
+    const c = document.createElement("canvas");
+    c.width = targetW; c.height = targetH;
+    c.getContext("2d")!.drawImage(img, 0, 0, targetW, targetH);
+    return c;
+}
+
+async function decodeQRFromFile(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
         const img = new Image();
         const url = URL.createObjectURL(file);
+
         img.onload = () => {
             URL.revokeObjectURL(url);
-            const canvas = document.createElement("canvas");
-            // Scale down very large images to speed up decode
-            const maxDim = 1200;
-            const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
-            canvas.width = Math.round(img.naturalWidth * scale);
-            canvas.height = Math.round(img.naturalHeight * scale);
-            const ctx = canvas.getContext("2d")!;
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const result = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert",
-            });
-            if (result) resolve(result.data);
-            else reject(new Error("No QR code found. Make sure the QR is clear and fully visible in the photo."));
+            const W = img.naturalWidth || 800;
+            const H = img.naturalHeight || 600;
+
+            // Scale candidates: try large → small (larger = more detail, smaller = QR fills more)
+            const scales = [1, 0.75, 0.5, 0.33, 1.5, 2]
+                .filter(s => {
+                    const w = Math.round(W * s);
+                    return w >= 200 && w <= 4000;
+                });
+
+            for (const scale of scales) {
+                const w = Math.round(W * scale);
+                const h = Math.round(H * scale);
+
+                // Full image at this scale
+                const full = makeCanvas(img, w, h);
+                const r1 = scanCanvas(full);
+                if (r1) { resolve(r1); return; }
+
+                // Centre 65% crop (removes distracting edges / background)
+                const cx = Math.round(w * 0.175);
+                const cy = Math.round(h * 0.175);
+                const cw = Math.round(w * 0.65);
+                const ch = Math.round(h * 0.65);
+                if (cw >= 100 && ch >= 100) {
+                    const crop = document.createElement("canvas");
+                    crop.width = cw; crop.height = ch;
+                    crop.getContext("2d")!.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
+                    const r2 = scanCanvas(crop);
+                    if (r2) { resolve(r2); return; }
+                }
+            }
+
+            reject(new Error(
+                "No QR code found.\n\n" +
+                "Tips: hold the phone closer so the QR fills about 70% of the frame, ensure good lighting, and tap to focus before shooting."
+            ));
         };
+
         img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Could not load image.")); };
         img.src = url;
     });
 }
 
-// ── Parse QR payload (base64 JSON or raw JSON) ────────────────────────────────
-function parseQRPayload(raw: string): { merchantId: string; serviceType: string; action: string } | null {
+// ─── Parse QR payload (base64-JSON or raw JSON) ─────────────────────────────
+function parsePayload(raw: string): { merchantId: string; serviceType: string; action: string } | null {
     try { return JSON.parse(atob(raw.trim())); } catch { }
     try { return JSON.parse(raw.trim()); } catch { }
     return null;
 }
 
-type ScanStatus = "idle" | "scanning" | "success" | "error";
+// ─── Component ───────────────────────────────────────────────────────────────
+type Status = "idle" | "scanning" | "success" | "error";
 
 export default function CameraQR() {
     const { user } = useAuth();
     const { toast } = useToast();
     const navigate = useNavigate();
-
     const userId = user?.id || "user_demo_customer";
 
-    const [status, setStatus] = useState<ScanStatus>("idle");
-    const [statusMsg, setStatusMsg] = useState("");
-    const [lastAction, setLastAction] = useState<"start" | "stop" | null>(null);
+    const [status, setStatus] = useState<Status>("idle");
+    const [msg, setMsg] = useState("");
 
-    // Live camera refs
+    // Live camera
     const videoRef = useRef<HTMLVideoElement | null>(null);
-    const streamRef = useRef<MediaStream | null>(null);
     const rafRef = useRef<number | null>(null);
-    const liveCanvas = useRef<HTMLCanvasElement | null>(null);
+    const streamRef = useRef<MediaStream | null>(null);
+    const liveCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+    const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
     const [liveCam, setLiveCam] = useState(false);
     const [liveCamErr, setLiveCamErr] = useState<string | null>(null);
 
-    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const fileRef = useRef<HTMLInputElement | null>(null);
+    const galleryRef = useRef<HTMLInputElement | null>(null);
     const processingRef = useRef(false);
 
-    // ── Core action handler (shared by all scan modes) ────────────────────────
-    async function executeAction(payload: { merchantId: string; serviceType: string; action: string }) {
+    // ── shared action executor ───────────────────────────────────────────────
+    async function execute(payload: { merchantId: string; serviceType: string; action: string }) {
         if (processingRef.current) return;
         processingRef.current = true;
 
         const { merchantId, serviceType, action } = payload;
-        setLastAction(action as "start" | "stop");
         setStatus("scanning");
-        setStatusMsg(action === "start" ? "Starting session…" : "Stopping session & processing payment…");
-
-        // Stop live camera if running
-        if (liveCam) stopLiveCamera();
+        setMsg(action === "start" ? "Starting session…" : "Stopping & processing payment…");
+        if (liveCam) stopLive();
 
         try {
             if (action === "start") {
-                // ── START SESSION ─────────────────────────────────────────────
                 const res = await fetch(`${API_URL}/api/start-session`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ userId, merchantId, serviceType }),
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || "Failed to start session");
-
                 setStatus("success");
-                setStatusMsg(`Session started at ${data.merchant?.name || merchantId}`);
-                toast({
-                    title: "▶️ Session Started!",
-                    description: `${data.merchant?.name} · ₹${(data.merchant?.price_per_minute_paise / 100).toFixed(0)}/min`,
-                });
-                setTimeout(() => navigate("/customer"), 1200);
+                setMsg(`Session started — ${data.merchant?.name || merchantId}`);
+                toast({ title: "▶️ Session Started!", description: `${data.merchant?.name} · ₹${(data.merchant?.price_per_minute_paise / 100).toFixed(0)}/min` });
+                setTimeout(() => navigate("/customer"), 1000);
 
             } else if (action === "stop") {
-                // ── STOP SESSION ─────────────────────────────────────────────
                 const stopRes = await fetch(`${API_URL}/api/stop-session`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ userId, merchantId }),
                 });
                 const stopData = await stopRes.json();
@@ -137,71 +165,56 @@ export default function CameraQR() {
                 const { finalAmountPaise, session } = stopData;
 
                 if (!finalAmountPaise || finalAmountPaise <= 0) {
-                    setStatus("success");
-                    setStatusMsg("Session ended · No charges");
-                    toast({ title: "⏹ Session stopped", description: "No charges" });
-                    setTimeout(() => navigate("/customer"), 1200);
+                    setStatus("success"); setMsg("Session ended · No charges");
+                    toast({ title: "⏹ Session ended", description: "No charges" });
+                    setTimeout(() => navigate("/customer"), 1000);
                     return;
                 }
 
-                setStatusMsg("Deducting payment from wallet…");
-
-                // ── PAY FROM WALLET (server emits payment:success to merchant) ─
+                setMsg("Deducting from wallet…");
                 const payRes = await fetch(`${API_URL}/api/pay-wallet`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    method: "POST", headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ userId, sessionId: session?.id }),
                 });
                 const payData = await payRes.json();
                 if (!payRes.ok) throw new Error(payData.error || "Payment failed");
 
-                const amount = `₹${(finalAmountPaise / 100).toFixed(2)}`;
-                setStatus("success");
-                setStatusMsg(`Paid ${amount} · Merchant notified ✓`);
-                toast({
-                    title: `✅ ${amount} paid!`,
-                    description: "Session ended · Merchant dashboard updated",
-                });
-                setTimeout(() => navigate("/customer"), 1600);
-            } else {
-                throw new Error(`Unknown action: ${action}`);
+                const amt = `₹${(finalAmountPaise / 100).toFixed(2)}`;
+                setStatus("success"); setMsg(`Paid ${amt} · Merchant notified ✓`);
+                toast({ title: `✅ ${amt} paid!`, description: "Session ended · Merchant dashboard updated" });
+                setTimeout(() => navigate("/customer"), 1400);
             }
-        } catch (err: any) {
-            setStatus("error");
-            setStatusMsg(err.message);
-            toast({ title: "Error", description: err.message, variant: "destructive" });
+        } catch (e: any) {
+            setStatus("error"); setMsg(e.message);
+            toast({ title: "Error", description: e.message, variant: "destructive" });
         } finally {
             setTimeout(() => { processingRef.current = false; }, 3000);
         }
     }
 
-    // ── Photo capture handler ─────────────────────────────────────────────────
-    async function handlePhotoFile(e: React.ChangeEvent<HTMLInputElement>) {
+    // ── Photo capture ────────────────────────────────────────────────────────
+    async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
         e.target.value = "";
-
-        setStatus("scanning");
-        setStatusMsg("Reading QR from photo…");
+        setStatus("scanning"); setMsg("Decoding QR from photo…");
         try {
             const raw = await decodeQRFromFile(file);
-            const payload = parseQRPayload(raw);
-            if (!payload || !payload.merchantId || !payload.action) {
-                throw new Error("QR code is not a Steam Pay code. Scan the merchant's START or STOP QR.");
-            }
-            await executeAction(payload);
-        } catch (err: any) {
-            setStatus("error");
-            setStatusMsg(err.message);
-            toast({ title: "❌ Scan failed", description: err.message, variant: "destructive" });
+            const payload = parsePayload(raw);
+            if (!payload?.merchantId || !payload?.action)
+                throw new Error("Not a Steam Pay QR code. Scan the merchant's START or STOP QR.");
+            await execute(payload);
+        } catch (e: any) {
+            setStatus("error"); setMsg(e.message);
+            toast({ title: "❌ Scan failed", description: e.message, variant: "destructive" });
         }
     }
 
-    // ── Live camera scanner ───────────────────────────────────────────────────
-    async function startLiveCamera() {
+    // ── Live camera ──────────────────────────────────────────────────────────
+    async function startLive() {
         setLiveCamErr(null);
         if (!IS_SECURE) {
-            setLiveCamErr("Live camera requires HTTPS or localhost. Use the Photo Scan button instead — it works perfectly!");
+            setLiveCamErr("Live camera needs HTTPS. Use 'Open Camera' photo mode instead.");
             return;
         }
         try {
@@ -209,68 +222,55 @@ export default function CameraQR() {
                 video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
             });
             streamRef.current = stream;
-            if (videoRef.current) {
-                videoRef.current.srcObject = stream;
-                videoRef.current.play();
-            }
+            if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
             setLiveCam(true);
-            scanLoop();
+            loop();
         } catch (e: any) {
-            const msg = e?.message || "";
-            setLiveCamErr(
-                msg.includes("NotAllowed") ? "Camera permission denied. Allow camera in your browser settings."
-                    : msg.includes("NotFound") ? "No camera found on this device."
-                        : `Camera error: ${msg}`
-            );
+            const m = e?.message || "";
+            setLiveCamErr(m.includes("NotAllowed") ? "Camera permission denied."
+                : m.includes("NotFound") ? "No camera found."
+                    : `Camera error: ${m}`);
         }
     }
 
-    function stopLiveCamera() {
+    function stopLive() {
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
-        if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current?.getTracks().forEach(t => t.stop());
         streamRef.current = null;
         setLiveCam(false);
     }
 
-    function scanLoop() {
-        if (!videoRef.current || !liveCanvas.current) return;
-        const ctx = liveCanvas.current.getContext("2d")!;
+    function loop() {
         const vid = videoRef.current;
+        const canvas = liveCanvasRef.current;
+        if (!vid || !canvas) return;
         if (vid.readyState === vid.HAVE_ENOUGH_DATA) {
-            liveCanvas.current.width = vid.videoWidth;
-            liveCanvas.current.height = vid.videoHeight;
-            ctx.drawImage(vid, 0, 0, vid.videoWidth, vid.videoHeight);
-            const imgData = ctx.getImageData(0, 0, vid.videoWidth, vid.videoHeight);
-            const result = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: "dontInvert" });
-            if (result && !processingRef.current) {
-                const payload = parseQRPayload(result.data);
-                if (payload?.merchantId && payload?.action) {
-                    executeAction(payload);
-                    return; // stop loop — executeAction will stop camera
-                }
+            canvas.width = vid.videoWidth; canvas.height = vid.videoHeight;
+            if (!liveCtxRef.current) liveCtxRef.current = canvas.getContext("2d");
+            liveCtxRef.current!.drawImage(vid, 0, 0);
+            const img = liveCtxRef.current!.getImageData(0, 0, canvas.width, canvas.height);
+            const res = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+            if (res && !processingRef.current) {
+                const p = parsePayload(res.data);
+                if (p?.merchantId && p?.action) { execute(p); return; }
             }
         }
-        rafRef.current = requestAnimationFrame(scanLoop);
+        rafRef.current = requestAnimationFrame(loop);
     }
 
-    useEffect(() => () => { stopLiveCamera(); }, []);
+    useEffect(() => () => { stopLive(); }, []);
 
-    // ── Demo (button-based) ───────────────────────────────────────────────────
-    async function handleDemo(action: "start" | "stop") {
-        const raw = action === "start" ? startQRPayload : stopQRPayload;
-        const payload = parseQRPayload(raw)!;
-        await executeAction(payload);
+    async function handleDemo(a: "start" | "stop") {
+        await execute(parsePayload(a === "start" ? startQRPayload : stopQRPayload)!);
     }
+
+    const busyScanning = status === "scanning";
 
     return (
         <div className="flex min-h-screen flex-col bg-background">
-
             {/* Header */}
-            <div className="flex items-center gap-3 border-b border-border p-4 bg-card sticky top-0 z-10">
-                <button
-                    onClick={() => { stopLiveCamera(); navigate(-1); }}
-                    className="rounded-xl p-2 hover:bg-muted transition-colors"
-                >
+            <header className="flex items-center gap-3 border-b border-border p-4 bg-card sticky top-0 z-10">
+                <button onClick={() => { stopLive(); navigate(-1); }} className="rounded-xl p-2 hover:bg-muted">
                     <ArrowLeft className="h-5 w-5 text-muted-foreground" />
                 </button>
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
@@ -278,20 +278,17 @@ export default function CameraQR() {
                 </div>
                 <div>
                     <h1 className="font-display text-lg font-bold text-foreground">Scan QR Code</h1>
-                    <p className="text-xs text-muted-foreground">Tap to scan · Session starts/stops instantly</p>
+                    <p className="text-xs text-muted-foreground">Start or stop a session</p>
                 </div>
-            </div>
+            </header>
 
-            <main className="flex-1 flex flex-col items-center justify-center p-6 gap-5 max-w-sm mx-auto w-full">
+            <main className="flex-1 flex flex-col items-center justify-center p-5 gap-4 max-w-sm mx-auto w-full">
 
-                {/* STATUS CARD */}
+                {/* Status */}
                 <AnimatePresence mode="wait">
                     {status !== "idle" && (
-                        <motion.div
-                            key={status}
-                            initial={{ opacity: 0, y: -10, scale: 0.96 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.96 }}
+                        <motion.div key={status}
+                            initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
                             className={`w-full rounded-2xl p-4 flex items-start gap-3 border ${status === "scanning" ? "bg-primary/5 border-primary/30"
                                     : status === "success" ? "bg-green-500/5 border-green-500/30"
                                         : "bg-destructive/5 border-destructive/30"
@@ -300,11 +297,11 @@ export default function CameraQR() {
                             {status === "scanning" && <Loader2 className="h-5 w-5 animate-spin text-primary mt-0.5 shrink-0" />}
                             {status === "success" && <CheckCircle2 className="h-5 w-5 text-green-400 mt-0.5 shrink-0" />}
                             {status === "error" && <AlertCircle className="h-5 w-5 text-destructive mt-0.5 shrink-0" />}
-                            <div>
+                            <div className="flex-1">
                                 <p className={`text-sm font-semibold ${status === "success" ? "text-green-400" : status === "error" ? "text-destructive" : "text-foreground"}`}>
-                                    {status === "scanning" ? "Processing…" : status === "success" ? "Done!" : "Error"}
+                                    {status === "scanning" ? "Processing…" : status === "success" ? "Done!" : "Scan failed"}
                                 </p>
-                                <p className="text-xs text-muted-foreground mt-0.5">{statusMsg}</p>
+                                <p className="text-xs text-muted-foreground mt-0.5 whitespace-pre-line">{msg}</p>
                                 {status === "error" && (
                                     <button onClick={() => setStatus("idle")} className="mt-2 flex items-center gap-1 text-xs text-primary hover:underline">
                                         <RefreshCw className="h-3 w-3" />Try again
@@ -315,118 +312,104 @@ export default function CameraQR() {
                     )}
                 </AnimatePresence>
 
-                {/* ── MAIN SCAN BUTTON (Photo capture) ────────────────── */}
-                <div className="w-full glass rounded-3xl p-6 flex flex-col items-center gap-5 border border-border">
-
+                {/* ── PHOTO SCAN (primary — works on HTTP) ── */}
+                <div className="w-full glass rounded-3xl p-6 space-y-4 border border-border">
                     <div className="flex flex-col items-center gap-2 text-center">
-                        <div className="relative flex h-24 w-24 items-center justify-center rounded-3xl bg-primary/10">
-                            <QrCode className="h-12 w-12 text-primary" />
-                            <span className="absolute -right-1 -bottom-1 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-[10px] font-bold text-white">
-                                <Camera className="h-3.5 w-3.5" />
+                        <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/10">
+                            <QrCode className="h-11 w-11 text-primary" />
+                            <span className="absolute -right-1 -bottom-1 flex h-6 w-6 items-center justify-center rounded-full bg-primary">
+                                <Camera className="h-3.5 w-3.5 text-white" />
                             </span>
                         </div>
-                        <p className="font-display text-xl font-bold text-foreground">Photo Scan</p>
+                        <p className="font-display text-lg font-bold text-foreground">Photo Scan</p>
                         <p className="text-xs text-muted-foreground">
-                            Opens your camera. Point at the merchant's <br />
-                            <strong className="text-foreground">START</strong> or <strong className="text-foreground">STOP</strong> QR and capture.
+                            Hold phone close — QR should fill <strong className="text-foreground">most of the frame</strong>
                         </p>
                     </div>
 
-                    {/* Hidden file inputs */}
-                    <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        capture="environment"
-                        className="hidden"
-                        onChange={handlePhotoFile}
-                    />
-                    <input
-                        id="gallery-pick"
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handlePhotoFile}
-                    />
+                    <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhoto} />
+                    <input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={handlePhoto} />
 
                     <button
-                        onClick={() => { setStatus("idle"); fileInputRef.current?.click(); }}
-                        disabled={status === "scanning"}
-                        className="w-full flex items-center justify-center gap-2 rounded-2xl bg-primary py-4 text-base font-bold text-primary-foreground hover:neon-glow active:scale-95 transition-transform disabled:opacity-50"
+                        onClick={() => { setStatus("idle"); fileRef.current?.click(); }}
+                        disabled={busyScanning}
+                        className="w-full flex items-center justify-center gap-2 rounded-2xl bg-primary py-4 text-base font-bold text-primary-foreground hover:neon-glow active:scale-95 transition-all disabled:opacity-50"
                     >
                         <Camera className="h-5 w-5" />
-                        Open Camera &amp; Scan QR
+                        Open Camera &amp; Scan
                     </button>
-
-                    <label
-                        htmlFor="gallery-pick"
-                        className="w-full flex items-center justify-center gap-2 rounded-2xl border border-border py-3 text-sm font-semibold text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer transition-colors"
+                    <button
+                        onClick={() => { setStatus("idle"); galleryRef.current?.click(); }}
+                        disabled={busyScanning}
+                        className="w-full flex items-center justify-center gap-2 rounded-2xl border border-border py-3 text-sm font-semibold text-muted-foreground hover:bg-muted cursor-pointer transition-colors disabled:opacity-50"
                     >
                         <QrCode className="h-4 w-4" />
-                        Pick from Gallery / Screenshots
-                    </label>
+                        Pick from Gallery
+                    </button>
+
+                    {/* Tip */}
+                    <div className="flex items-start gap-2 rounded-xl bg-muted/50 px-3 py-2.5">
+                        <Info className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                        <p className="text-[11px] text-muted-foreground leading-relaxed">
+                            Point camera at the merchant's <strong className="text-foreground">START</strong> or <strong className="text-foreground">STOP</strong> QR.
+                            Tap to focus, ensure QR fills ≥60% of the frame, tap capture.
+                        </p>
+                    </div>
                 </div>
 
-                {/* ── LIVE CAMERA ──────────────────────────────────────── */}
+                {/* ── LIVE CAMERA (HTTPS only) ── */}
                 <div className="w-full glass rounded-2xl overflow-hidden border border-border">
                     <button
-                        onClick={() => liveCam ? stopLiveCamera() : startLiveCamera()}
-                        disabled={status === "scanning"}
+                        onClick={() => liveCam ? stopLive() : startLive()}
+                        disabled={busyScanning}
                         className="flex w-full items-center gap-3 px-4 py-3 hover:bg-muted transition-colors"
                     >
-                        <Camera className={`h-4 w-4 ${liveCam ? "text-primary" : "text-muted-foreground"}`} />
+                        <Camera className={`h-4 w-4 ${liveCam ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
                         <div className="flex-1 text-left">
                             <p className="text-sm font-semibold text-foreground">
-                                {liveCam ? "Live Camera (tap to stop)" : "Continuous Live Camera"}
+                                {liveCam ? "Live Camera — tap to stop" : "Live Camera (continuous)"}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                                {IS_SECURE ? "Auto-scans viewfinder · no button needed" : "Requires HTTPS · use Photo Scan instead"}
+                                {IS_SECURE ? "Auto-detects QR — no button needed" : "⚠️ Needs HTTPS — use Photo Scan above"}
                             </p>
                         </div>
-                        {liveCam && <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />}
+                        {liveCam && <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />}
                     </button>
-                    {(liveCam || liveCamErr) && (
-                        <div>
-                            {liveCamErr && (
-                                <p className="px-4 pb-3 text-xs text-yellow-400">{liveCamErr}</p>
-                            )}
-                            {liveCam && (
-                                <div className="relative bg-black">
-                                    <video ref={videoRef} playsInline muted className="w-full" style={{ maxHeight: 260 }} />
-                                    <canvas ref={liveCanvas} className="hidden" />
-                                    {/* Overlay crosshair */}
-                                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                        <div className="h-44 w-44 rounded-2xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]" />
-                                    </div>
-                                </div>
-                            )}
+
+                    {liveCamErr && (
+                        <p className="px-4 pb-3 text-xs text-yellow-400">{liveCamErr}</p>
+                    )}
+                    {liveCam && (
+                        <div className="relative bg-black">
+                            <video ref={videoRef} playsInline muted className="w-full max-h-56 object-cover" />
+                            <canvas ref={liveCanvasRef} className="hidden" />
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                                <div className="h-40 w-40 rounded-xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
+                            </div>
                         </div>
                     )}
                 </div>
 
-                {/* ── DEMO BUTTONS ─────────────────────────────────────── */}
+                {/* ── DEMO BUTTONS ── */}
                 <div className="w-full glass rounded-2xl p-4 border border-border">
-                    <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wider">Demo — No Camera</p>
+                    <p className="text-xs font-semibold text-muted-foreground mb-3 uppercase tracking-wider">🧪 Demo — No Camera Needed</p>
                     <div className="grid grid-cols-2 gap-3">
                         <button
                             onClick={() => handleDemo("start")}
-                            disabled={status === "scanning"}
-                            className="flex flex-col items-center gap-1.5 rounded-xl bg-primary/10 border border-primary/30 py-4 text-sm font-bold text-primary hover:bg-primary/20 active:scale-95 transition-all disabled:opacity-50"
+                            disabled={busyScanning}
+                            className="flex flex-col items-center gap-2 rounded-xl bg-primary/10 border border-primary/30 py-4 text-sm font-bold text-primary hover:bg-primary/20 active:scale-95 transition-all disabled:opacity-50"
                         >
-                            <Play className="h-6 w-6" />
-                            Demo START
+                            <Play className="h-6 w-6" />Demo START
                         </button>
                         <button
                             onClick={() => handleDemo("stop")}
-                            disabled={status === "scanning"}
-                            className="flex flex-col items-center gap-1.5 rounded-xl bg-destructive/10 border border-destructive/30 py-4 text-sm font-bold text-destructive hover:bg-destructive/20 active:scale-95 transition-all disabled:opacity-50"
+                            disabled={busyScanning}
+                            className="flex flex-col items-center gap-2 rounded-xl bg-destructive/10 border border-destructive/30 py-4 text-sm font-bold text-destructive hover:bg-destructive/20 active:scale-95 transition-all disabled:opacity-50"
                         >
-                            <Square className="h-6 w-6" />
-                            Demo STOP
+                            <Square className="h-6 w-6" />Demo STOP
                         </button>
                     </div>
                 </div>
-
             </main>
         </div>
     );
