@@ -283,7 +283,7 @@ export default function CustomerDashboard() {
             <div className="space-y-6">
               <div>
                 <h1 className="font-display text-3xl font-bold text-foreground">
-                  Hello, {profile?.display_name || "Customer"} 👋
+                  Hello, {profile?.display_name || "Customer"}
                 </h1>
                 <p className="text-sm text-muted-foreground">Pay as you use — in real time</p>
               </div>

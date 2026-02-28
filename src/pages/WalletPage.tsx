@@ -249,13 +249,8 @@ export default function WalletPage({ onBalanceChange }: Props) {
         <div className="space-y-6">
             <div className="flex items-center justify-between">
                 <h2 className="font-display text-2xl font-bold text-foreground flex items-center gap-2">
-                    <Wallet className="h-6 w-6 text-primary" />Pulse Wallet
+                    <Wallet className="h-6 w-6 text-primary" />StreamPay Wallet
                 </h2>
-                {wallet && (
-                    <button onClick={() => setShowTopup(true)} className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-bold text-primary-foreground hover:neon-glow">
-                        <Plus className="h-4 w-4" />Top Up
-                    </button>
-                )}
             </div>
 
             {loading && <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Loading wallet…</div>}
@@ -284,7 +279,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
                     <div className="relative">
                         <div className="flex items-start justify-between mb-4">
                             <div>
-                                <p className="text-xs text-muted-foreground uppercase tracking-widest">Stream Pay Wallet</p>
+                                <p className="text-xs text-muted-foreground uppercase tracking-widest">Wallet Id</p>
                                 <p className="font-mono text-lg font-bold text-primary mt-1">{wallet.wallet_id}</p>
                                 <p className="text-sm text-muted-foreground">{wallet.display_name}</p>
                             </div>
