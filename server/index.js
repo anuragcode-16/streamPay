@@ -63,8 +63,18 @@ app.use((req, res, next) => {
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
-    socket.on("join:merchant", (id) => socket.join(`merchant:${id}`));
-    socket.on("join:user", (id) => socket.join(`user:${id}`));
+    console.log(`[Socket] Client connected: ${socket.id}`);
+    socket.on("join:merchant", (id) => {
+        console.log(`[Socket] Merchant joining room: merchant:${id}`);
+        socket.join(`merchant:${id}`);
+    });
+    socket.on("join:user", (id) => {
+        console.log(`[Socket] User joining room: user:${id}`);
+        socket.join(`user:${id}`);
+    });
+    socket.on("disconnect", () => {
+        console.log(`[Socket] Client disconnected: ${socket.id}`);
+    });
 });
 
 worker.init(io);
@@ -435,6 +445,7 @@ app.post("/api/start-session", async (req, res) => {
             sessionId, userId, merchantId, startedAt: session.started_at,
             pricePerMinutePaise, serviceType: session.service_type, merchantName: merchant.name
         };
+        console.log(`[API] start-session success! Emitting 'session:start' to merchant:${merchantId} and user:${userId}`);
         io.to(`merchant:${merchantId}`).emit("session:start", eventData);
         io.to(`user:${userId}`).emit("session:start", eventData);
 

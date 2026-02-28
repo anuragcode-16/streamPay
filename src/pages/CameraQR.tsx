@@ -98,6 +98,7 @@ export default function CameraQR() {
             try { decoded = JSON.parse(raw.trim()); }
             catch { toast({ title: "Invalid QR", variant: "destructive" }); return; }
         }
+        console.log("[CameraQR] Scanned Payload Decoded:", decoded);
         const { merchantId, serviceType, action } = decoded || {};
         if (!merchantId || !action) { toast({ title: "Unknown QR format", variant: "destructive" }); return; }
 
@@ -218,12 +219,13 @@ export default function CameraQR() {
             <main className="flex-1 p-4 max-w-lg mx-auto w-full space-y-4">
 
                 {/* Camera viewfinder */}
-                <div className="glass rounded-2xl overflow-hidden">
+                <div className="glass rounded-2xl overflow-hidden relative">
                     <div
                         id="qr-reader"
                         className="w-full aspect-square bg-black/90 relative flex items-center justify-center"
                         style={{ minHeight: 280 }}
-                    >
+                    ></div>
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                         {!scanning && !camError && (
                             <div className="flex flex-col items-center gap-3 text-muted-foreground">
                                 <Camera className="h-12 w-12 opacity-40" />
@@ -231,7 +233,7 @@ export default function CameraQR() {
                             </div>
                         )}
                         {camError && (
-                            <div className="flex flex-col items-center gap-3 text-destructive p-6 text-center">
+                            <div className="flex flex-col items-center gap-3 text-destructive p-6 text-center pointer-events-auto">
                                 <CameraOff className="h-10 w-10" />
                                 <p className="text-sm font-medium">{camError}</p>
                                 <p className="text-xs text-muted-foreground">Use the demo buttons below</p>

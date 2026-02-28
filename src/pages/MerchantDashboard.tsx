@@ -89,11 +89,16 @@ export default function MerchantDashboard() {
 
   // ── Socket.IO ─────────────────────────────────────────────────────────────
   useEffect(() => {
+    console.log(`[MerchantDashboard] Connecting socket.io to: ${API_URL}, joining: merchant:${merchantId}`);
     const socket = io(API_URL, { transports: ["websocket", "polling"] });
     socketRef.current = socket;
-    socket.on("connect", () => socket.emit("join:merchant", merchantId));
+    socket.on("connect", () => {
+      console.log(`[MerchantDashboard] Connected! Emitting join:merchant for ${merchantId}`);
+      socket.emit("join:merchant", merchantId);
+    });
 
     socket.on("session:start", (data: any) => {
+      console.log(`[MerchantDashboard] Received 'session:start' event:`, data);
       setLiveSessions(prev => new Map(prev).set(data.sessionId, { ...data, elapsedSec: 0, totalDebitedPaise: 0, status: "active" }));
       toast({ title: "🟢 New Session!", description: `User ${data.userId?.slice(0, 8)}… started ${data.serviceType}` });
     });
