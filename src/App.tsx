@@ -9,6 +9,7 @@ import Index from "./pages/Index";
 import AuthPage from "./pages/AuthPage";
 import MerchantDashboard from "./pages/MerchantDashboard";
 import CustomerDashboard from "./pages/CustomerDashboard";
+import CameraQR from "./pages/CameraQR";
 import NearbyPage from "./pages/NearbyPage";
 import InvoicePage from "./pages/InvoicePage";
 import WalletPage from "./pages/WalletPage";
@@ -48,8 +49,7 @@ const App = () => (
             />
 
             {/* Public / semi-public */}
-            {/* /scan → redirect to customer dashboard (QR scanning replaced by x402) */}
-            <Route path="/scan" element={<CustomerDashboard />} />
+            <Route path="/scan" element={<CameraQR />} />
             <Route path="/nearby" element={<NearbyPage />} />
             <Route path="/wallet" element={<WalletPage />} />
             <Route path="/invoice/:sessionId" element={<InvoicePage />} />
