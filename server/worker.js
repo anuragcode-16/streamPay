@@ -86,11 +86,6 @@ async function processSessionDb(session) {
             "INSERT INTO ledger (session_id, user_id, merchant_id, amount_paise, ts) VALUES ($1,$2,$3,$4,NOW())",
             [session_id, user_id, merchant_id, debitPaise]
         );
-        await client.query(
-            `INSERT INTO wallet_transactions (wallet_id, user_id, type, amount_paise, status, session_id, created_at)
-             VALUES ($1,$2,'debit',$3,'completed',$4,NOW())`,
-            [wallet_id, user_id, debitPaise, session_id]
-        );
         const totalRes = await client.query(
             "SELECT COALESCE(SUM(amount_paise),0)::int AS total FROM ledger WHERE session_id=$1",
             [session_id]
