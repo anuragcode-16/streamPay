@@ -60,7 +60,7 @@ function buildSystemPrompt(): string {
         .map(([m, amt]) => `  - ${m}: ₹${amt.toFixed(0)}`)
         .join("\n");
 
-    return `You are a strict Indian Tax Compliance Advisor AI embedded in the Steam Pay merchant dashboard.
+    return `You are a strict Indian Tax Compliance Advisor AI embedded in the Stream Pay merchant dashboard.
 
 MERCHANT FINANCIAL SUMMARY (FY 2024-25):
 - Total transactions (paid): ${summary.count}

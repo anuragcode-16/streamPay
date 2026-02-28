@@ -96,7 +96,7 @@ export default function InvoicePage() {
                             <Zap className="h-5 w-5 text-primary-foreground" />
                         </div>
                         <div>
-                            <p className="font-display text-lg font-bold text-foreground">PULSE<span className="neon-text">PAY</span></p>
+                            <p className="font-display text-lg font-bold text-foreground">STREAM<span className="neon-text">PAY</span></p>
                             <p className="text-xs text-muted-foreground">Tax Invoice</p>
                         </div>
                     </div>
@@ -149,8 +149,8 @@ export default function InvoicePage() {
 
                 {/* Payment status */}
                 <div className={`flex items-center justify-between rounded-xl px-4 py-3 ${session.paymentStatus === "paid"
-                        ? "bg-green-500/10 border border-green-500/20"
-                        : "bg-yellow-500/10 border border-yellow-500/20"
+                    ? "bg-green-500/10 border border-green-500/20"
+                    : "bg-yellow-500/10 border border-yellow-500/20"
                     }`}>
                     <div className="flex items-center gap-2">
                         {session.paymentStatus === "paid"
@@ -165,7 +165,7 @@ export default function InvoicePage() {
 
                 {/* Footer */}
                 <div className="mt-6 pt-4 border-t border-border text-center">
-                    <p className="text-xs text-muted-foreground">Thank you for using Steam Pay · STEAMPAY.test</p>
+                    <p className="text-xs text-muted-foreground">Thank you for using Stream Pay · STREAMPAY.test</p>
                     <p className="text-xs text-muted-foreground mt-0.5">This is a computer-generated invoice. No signature required.</p>
                 </div>
             </div>

@@ -14,7 +14,7 @@ const Footer = () => {
           </span>
         </div>
         <p className="text-sm text-muted-foreground">
-          © 2026 Steam Pay by Mind_Matrix. Track 4: Streaming Utility.
+          © 2026 Stream Pay by Mind_Matrix. Track 4: Streaming Utility.
         </p>
         <div className="flex gap-6">
           <Link to="/auth?mode=login" className="text-sm text-muted-foreground hover:text-foreground">

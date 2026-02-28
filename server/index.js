@@ -1,5 +1,5 @@
 /**
- * index.js — Steam Pay Express Server (MVP + In-Memory Fallback)
+ * index.js — Stream Pay Express Server (MVP + In-Memory Fallback)
  *
  * When DATABASE_URL is unreachable, all data falls back to an in-process
  * memStore (lost on restart, but fully functional for demo/dev).
@@ -199,7 +199,7 @@ io.on("connection", (socket) => {
 worker.init(io, memStore, () => dbOnline);
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get("/", (_, res) => res.send(`<h2>Steam Pay Backend 🚀</h2><p>DB: ${dbOnline ? "online" : "in-memory"}</p>`));
+app.get("/", (_, res) => res.send(`<h2>Stream Pay Backend 🚀</h2><p>DB: ${dbOnline ? "online" : "in-memory"}</p>`));
 app.get("/health", (_, res) => res.json({ ok: true, dbOnline, ts: new Date().toISOString() }));
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -853,6 +853,6 @@ app.post("/api/webhook/razorpay", async (req, res) => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-    console.log(`\n🚀 Steam Pay server → http://localhost:${PORT}`);
+    console.log(`\n🚀 Stream Pay server → http://localhost:${PORT}`);
     console.log(`   Tick: ${process.env.TICK_INTERVAL_MS || 1000}ms | CORS: ${FRONTEND_URL}\n`);
 });

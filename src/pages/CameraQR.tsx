@@ -216,7 +216,7 @@ export default function CameraQR() {
         try {
             const raw = await decodeImage(file);
             const pl = parsePayload(raw);
-            if (!pl?.merchantId || !pl?.action) throw new Error("Not a Steam Pay QR code — scan the merchant's START or STOP QR");
+            if (!pl?.merchantId || !pl?.action) throw new Error("Not a Stream Pay QR code — scan the merchant's START or STOP QR");
             await executeAction(pl);
         } catch (e: any) {
             setStatus("error");

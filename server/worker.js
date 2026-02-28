@@ -1,5 +1,5 @@
 /**
- * worker.js — Steam Pay streaming debit worker (In-Memory Fallback)
+ * worker.js — Stream Pay streaming debit worker (In-Memory Fallback)
  *
  * Works with both a live Postgres DB and the in-memory memStore from index.js.
  * On every tick:

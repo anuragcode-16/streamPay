@@ -6,7 +6,7 @@ const steps = [
     icon: QrCode,
     step: "01",
     title: "Scan QR Code",
-    description: "Walk into any Steam Pay enabled location and scan the QR code with the app.",
+    description: "Walk into any Stream Pay enabled location and scan the QR code with the app.",
   },
   {
     icon: Play,
@@ -33,7 +33,7 @@ const HowItWorksSection = () => {
           className="text-center"
         >
           <h2 className="font-display text-4xl font-bold md:text-5xl">
-            How <span className="text-gradient">Steam Pay</span> Works
+            How <span className="text-gradient">Stream Pay</span> Works
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-muted-foreground">
             Three simple steps. No blockchain knowledge required.

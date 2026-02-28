@@ -1,4 +1,4 @@
-## Steam Pay – Manual Acceptance Test Script
+## Stream Pay – Manual Acceptance Test Script
 
 Follow these steps end‑to‑end in Razorpay **Test Mode** to validate the full QR → per‑second buffer → settlement flow.
 

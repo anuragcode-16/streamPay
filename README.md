@@ -1,4 +1,4 @@
-# ⚡ Steam Pay — Full MVP
+# ⚡ Stream Pay — Full MVP
 
 > QR → Per-second wallet buffer → Razorpay settlement · Real-time · OpenStreetMap
 

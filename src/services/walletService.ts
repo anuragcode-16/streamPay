@@ -1,5 +1,5 @@
 /**
- * walletService.ts — localStorage-backed wallet for Steam Pay
+ * walletService.ts — localStorage-backed wallet for Stream Pay
  *
  * Provides create, topUp, debit, getBalance, and getTransactions
  * without needing a backend database connection.
