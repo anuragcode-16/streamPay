@@ -11,7 +11,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
     Wallet, Plus, ArrowDownLeft, ArrowUpRight,
-    RefreshCw, Loader2, CreditCard,
+    RefreshCw, Loader2, CreditCard, Smartphone, Clock, CheckCircle2,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -50,6 +50,10 @@ export default function WalletPage() {
     const [displayName, setDisplayName] = useState("");
     const [topupAmount, setTopupAmount] = useState("100");
     const [topupLoading, setTopupLoading] = useState(false);
+    const [topupTab, setTopupTab] = useState<"razorpay" | "upi">("razorpay");
+    const [upiId, setUpiId] = useState("");
+    const [upiPending, setUpiPending] = useState(false);
+    const [upiSuccess, setUpiSuccess] = useState(false);
 
     const userId = user?.id || "user_demo_customer";
 
@@ -133,6 +137,37 @@ export default function WalletPage() {
             toast({ title: "Error", description: err.message, variant: "destructive" });
         } finally {
             setTopupLoading(false);
+        }
+    }
+
+    async function handleUpiCollect() {
+        const upiRegex = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/;
+        if (!upiRegex.test(upiId.trim())) {
+            toast({ title: "Invalid UPI ID", description: "Format should be like name@okaxis", variant: "destructive" });
+            return;
+        }
+        const amountPaise = Math.round(parseFloat(topupAmount) * 100);
+        if (isNaN(amountPaise) || amountPaise < 100) {
+            toast({ title: "Minimum top-up is ₹1", variant: "destructive" }); return;
+        }
+
+        setUpiPending(true);
+        setUpiSuccess(false);
+        try {
+            // Simulate a UPI collect request — real impl would POST to /api/wallet/upi-collect
+            await new Promise(res => setTimeout(res, 4000));
+            const updated = walletService.topUp(userId, amountPaise);
+            setWallet(updated);
+            setTransactions(walletService.getTransactions(userId));
+            setUpiSuccess(true);
+            toast({
+                title: `✅ ₹${topupAmount} added via UPI!`,
+                description: `New balance: ${formatPaise(updated.balance_paise)}`,
+            });
+            setTimeout(() => { setShowTopup(false); setUpiPending(false); setUpiSuccess(false); setUpiId(""); }, 1500);
+        } catch (err: any) {
+            toast({ title: "UPI collect failed", description: err.message, variant: "destructive" });
+            setUpiPending(false);
         }
     }
 
@@ -225,6 +260,7 @@ export default function WalletPage() {
                         <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-sm glass rounded-2xl p-6">
                             <h3 className="mb-4 font-display text-xl font-bold text-foreground">Add Money to Wallet</h3>
 
+                            {/* Amount Selector */}
                             <div className="mb-4">
                                 <label className="mb-1 block text-xs text-muted-foreground">Amount (INR)</label>
                                 <input
@@ -242,19 +278,88 @@ export default function WalletPage() {
                                 </div>
                             </div>
 
-                            <button
-                                onClick={handleRazorpayTopup} disabled={topupLoading}
-                                className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50"
-                            >
-                                {topupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
-                                Pay ₹{topupAmount} via Razorpay
-                            </button>
+                            {/* Payment Method Tabs */}
+                            <div className="mb-4 flex rounded-xl border border-border overflow-hidden">
+                                <button
+                                    onClick={() => setTopupTab("razorpay")}
+                                    className={`flex flex-1 items-center justify-center gap-2 py-2.5 text-xs font-bold transition ${topupTab === "razorpay" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"
+                                        }`}
+                                >
+                                    <CreditCard className="h-3.5 w-3.5" /> Card / Netbanking
+                                </button>
+                                <button
+                                    onClick={() => { setTopupTab("upi"); setUpiPending(false); setUpiSuccess(false); }}
+                                    className={`flex flex-1 items-center justify-center gap-2 py-2.5 text-xs font-bold transition ${topupTab === "upi" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"
+                                        }`}
+                                >
+                                    <Smartphone className="h-3.5 w-3.5" /> UPI ID
+                                </button>
+                            </div>
 
-                            <p className="mt-3 text-center text-xs text-muted-foreground">
-                                Test Mode · Card: <code className="rounded bg-muted px-1">4111 1111 1111 1111</code> · CVV: any · Expiry: any future
-                            </p>
+                            {/* Razorpay Tab */}
+                            {topupTab === "razorpay" && (
+                                <>
+                                    <button
+                                        onClick={handleRazorpayTopup} disabled={topupLoading}
+                                        className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50"
+                                    >
+                                        {topupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+                                        Pay ₹{topupAmount} via Razorpay
+                                    </button>
+                                    <p className="mt-3 text-center text-xs text-muted-foreground">
+                                        Test Mode · Card: <code className="rounded bg-muted px-1">4111 1111 1111 1111</code> · CVV: any
+                                    </p>
+                                </>
+                            )}
 
-                            <button onClick={() => setShowTopup(false)} className="mt-3 w-full rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:text-foreground">
+                            {/* UPI ID Tab */}
+                            {topupTab === "upi" && (
+                                <>
+                                    {!upiPending && !upiSuccess && (
+                                        <>
+                                            <div className="mb-3">
+                                                <label className="mb-1 block text-xs text-muted-foreground">Your UPI ID</label>
+                                                <input
+                                                    value={upiId}
+                                                    onChange={e => setUpiId(e.target.value)}
+                                                    placeholder="name@okaxis"
+                                                    className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm font-mono text-foreground focus:border-primary focus:outline-none"
+                                                />
+                                                <p className="mt-1 text-xs text-muted-foreground">We'll send a collect request to this UPI ID</p>
+                                            </div>
+                                            <button
+                                                onClick={handleUpiCollect}
+                                                className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 font-bold text-primary-foreground hover:neon-glow"
+                                            >
+                                                <Smartphone className="h-4 w-4" />
+                                                Request ₹{topupAmount}
+                                            </button>
+                                        </>
+                                    )}
+
+                                    {upiPending && !upiSuccess && (
+                                        <div className="flex flex-col items-center gap-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 p-5 text-center">
+                                            <Clock className="h-8 w-8 animate-pulse text-yellow-400" />
+                                            <p className="font-bold text-foreground">Collect Request Sent!</p>
+                                            <p className="text-sm text-muted-foreground">
+                                                Open your UPI app and approve the ₹{topupAmount} request from <span className="font-mono text-primary">{upiId}</span>
+                                            </p>
+                                            <Loader2 className="h-4 w-4 animate-spin text-yellow-400" />
+                                            <p className="text-xs text-muted-foreground">Waiting for approval…</p>
+                                        </div>
+                                    )}
+
+                                    {upiSuccess && (
+                                        <div className="flex flex-col items-center gap-3 rounded-xl border border-green-500/30 bg-green-500/10 p-5 text-center">
+                                            <CheckCircle2 className="h-8 w-8 text-green-400" />
+                                            <p className="font-bold text-green-400">Payment Approved!</p>
+                                            <p className="text-sm text-muted-foreground">₹{topupAmount} has been added to your wallet.</p>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+
+                            <button onClick={() => { setShowTopup(false); setUpiPending(false); setUpiSuccess(false); setUpiId(""); }} className="mt-3 w-full rounded-xl border border-border py-2.5 text-sm text-muted-foreground hover:text-foreground">
                                 Cancel
                             </button>
                         </motion.div>
