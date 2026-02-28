@@ -223,8 +223,17 @@ app.post("/api/wallet/create", async (req, res) => {
         try {
             const existing = await db.query("SELECT * FROM wallets WHERE user_id = $1", [userId]);
             if (existing.rowCount > 0) return res.json({ wallet: existing.rows[0] });
-            const walletId = generateWalletId();
+
             const name = displayName || `Wallet-${userId.slice(0, 6)}`;
+            const safeEmail = req.body.email || `${userId}@pulsepay.test`;
+
+            // Ensure user exists to satisfy foreign key
+            await db.query(
+                `INSERT INTO users (id, name, email, role) VALUES ($1, $2, $3, 'customer') ON CONFLICT (id) DO NOTHING`,
+                [userId, name, safeEmail]
+            );
+
+            const walletId = generateWalletId();
             const result = await db.query(
                 `INSERT INTO wallets (wallet_id, user_id, display_name, balance_paise) VALUES ($1, $2, $3, 0) RETURNING *`,
                 [walletId, userId, name]
@@ -597,6 +606,51 @@ app.get("/api/sessions/active/:merchantId", async (req, res) => {
     res.json({ sessions });
 });
 
+// GET /api/sessions/active/user/:userId — hydrate customer dashboard on mount
+app.get("/api/sessions/active/user/:userId", async (req, res) => {
+    const { userId } = req.params;
+    if (dbOnline) {
+        try {
+            const r = await db.query(
+                `SELECT s.*, m.name AS merchant_name, m.price_per_minute_paise
+                 FROM sessions s JOIN merchants m ON m.id = s.merchant_id
+                 WHERE s.user_id = $1 AND s.status IN ('active','paused_low_balance')
+                 ORDER BY s.started_at DESC`,
+                [userId]
+            );
+            const sessions = await Promise.all(r.rows.map(async (s) => {
+                const led = await db.query("SELECT COALESCE(SUM(amount_paise),0)::int AS total FROM ledger WHERE session_id=$1", [s.id]);
+                const elap = await db.query("SELECT EXTRACT(EPOCH FROM (NOW()-started_at))::int AS e FROM sessions WHERE id=$1", [s.id]);
+                return {
+                    sessionId: s.id, userId: s.user_id, merchantId: s.merchant_id,
+                    merchantName: s.merchant_name, serviceType: s.service_type,
+                    startedAt: s.started_at, pricePerMinutePaise: s.price_per_minute_paise,
+                    elapsedSec: elap.rows[0]?.e || 0,
+                    totalDebitedPaise: led.rows[0]?.total || 0,
+                    status: s.status,
+                };
+            }));
+            return res.json({ sessions });
+        } catch (err) { console.warn("[sessions/active/user] DB error:", err.message); }
+    }
+    // In-memory
+    const sessions = [...memStore.sessions.values()]
+        .filter(s => s.user_id === userId && (s.status === "active" || s.status === "paused_low_balance"))
+        .map(s => {
+            const now = Date.now();
+            const elapsedSec = Math.floor((now - new Date(s.started_at).getTime()) / 1000);
+            return {
+                sessionId: s.id, userId: s.user_id, merchantId: s.merchant_id,
+                merchantName: s.merchant_name || "PowerZone Gym",
+                serviceType: s.service_type, startedAt: s.started_at,
+                pricePerMinutePaise: s.price_per_minute_paise,
+                elapsedSec, totalDebitedPaise: memStore.getLedgerTotal(s.id),
+                status: s.status,
+            };
+        });
+    res.json({ sessions });
+});
+
 // POST /api/start-session
 app.post("/api/start-session", async (req, res) => {
     let { userId, merchantId, merchantServiceId, serviceType, payload } = req.body;
@@ -622,6 +676,14 @@ app.post("/api/start-session", async (req, res) => {
                 [userId, merchantId]
             );
             if (dup.rowCount > 0) return res.status(409).json({ error: "Active session exists", sessionId: dup.rows[0].id });
+
+            // Ensure user exists to satisfy foreign key
+            const safeEmail = req.body.email || `${userId}@pulsepay.test`;
+            await db.query(
+                `INSERT INTO users (id, name, email, role) VALUES ($1, $2, $3, 'customer') ON CONFLICT (id) DO NOTHING`,
+                [userId, `User-${userId.slice(0, 6)}`, safeEmail]
+            );
+
             const sessionId = uuidv4();
             const sesRes = await db.query(
                 `INSERT INTO sessions (id, user_id, merchant_id, merchant_service_id, service_type, started_at, status, payment_status, price_per_minute_paise)

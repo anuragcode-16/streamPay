@@ -92,6 +92,38 @@ export default function CustomerDashboard() {
       .catch(() => { });
   }, [userId]);
 
+  // ── Fetch active sessions on mount ───────────────────────────────────────
+  useEffect(() => {
+    fetch(`${API_URL}/api/sessions/active/user/${userId}`)
+      .then(r => r.json())
+      .then(d => {
+        if (d.sessions && d.sessions.length > 0) {
+          setSessionMap(prev => {
+            const next = new Map(prev);
+            d.sessions.forEach((s: any) => {
+              const row: SessionRow = {
+                id: s.sessionId,
+                merchantId: s.merchantId,
+                merchantName: s.merchantName || "Merchant",
+                serviceType: s.serviceType || "gym",
+                startedAt: s.startedAt,
+                pricePerMinutePaise: s.pricePerMinutePaise || 0,
+                elapsedSec: s.elapsedSec || 0,
+                totalDebitedPaise: s.totalDebitedPaise || 0,
+                finalAmountPaise: 0,
+                paymentStatus: "pending",
+                status: s.status as SessionStatus,
+                ads: [],
+              };
+              next.set(row.id, row);
+            });
+            return next;
+          });
+        }
+      })
+      .catch(() => { });
+  }, [userId]);
+
   // ── Socket.IO ────────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = io(API_URL, { transports: ["websocket", "polling"] });
@@ -377,11 +409,12 @@ export default function CustomerDashboard() {
               </div>
 
               {/* Quick stats */}
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-4 grid-cols-2 sm:grid-cols-4">
                 {[
                   { label: "Wallet Balance", value: rupee(walletPaise), icon: Wallet },
-                  { label: "Rate", value: activeSession ? `${rupee(activeSession.pricePerMinutePaise)}/min` : "—", icon: Clock },
+                  { label: "Rate", value: activeSession ? `${rupee(activeSession.pricePerMinutePaise)}/min` : "—", icon: Zap },
                   { label: "Session Cost", value: activeSession ? rupee(activeSession.totalDebitedPaise) : "—", icon: TrendingDown },
+                  { label: "Elapsed Time", value: activeSession ? fmt(activeSession.elapsedSec) : "—", icon: Clock },
                 ].map(s => (
                   <div key={s.label} className="glass rounded-2xl p-4">
                     <s.icon className="h-4 w-4 text-primary mb-2" />

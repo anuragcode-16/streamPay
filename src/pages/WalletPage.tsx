@@ -113,7 +113,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
             const res = await fetch(`${API_URL}/api/wallet/create`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ userId, displayName: user?.email?.split("@")[0] }),
+                body: JSON.stringify({ userId, displayName: user?.email?.split("@")[0], email: user?.email }),
             });
             const d = await res.json();
             if (!res.ok) throw new Error(d.error || "Failed to create wallet");

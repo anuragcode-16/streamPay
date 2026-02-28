@@ -83,7 +83,7 @@ export default function QRScan() {
                 const res = await fetch(`${API_URL}/api/start-session`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ userId, merchantId: decoded.merchantId, serviceType: decoded.serviceType }),
+                    body: JSON.stringify({ userId, merchantId: decoded.merchantId, serviceType: decoded.serviceType, email: user?.email }),
                 });
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || "Failed to start session");

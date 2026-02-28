@@ -156,7 +156,7 @@ export default function CameraQR() {
                 const res = await fetch(`${API_URL}/api/start-session`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ userId, merchantId, serviceType }),
+                    body: JSON.stringify({ userId, merchantId, serviceType, email: user?.email }),
                 });
                 const d = await res.json();
                 if (!res.ok) throw new Error(d.error || "Failed to start session");
@@ -295,8 +295,8 @@ export default function CameraQR() {
                         <motion.div key={status}
                             initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                             className={`rounded-2xl p-4 flex items-start gap-3 border ${status === "processing" ? "bg-primary/5 border-primary/30"
-                                    : status === "success" ? "bg-green-500/5 border-green-500/30"
-                                        : "bg-destructive/5 border-destructive/30"
+                                : status === "success" ? "bg-green-500/5 border-green-500/30"
+                                    : "bg-destructive/5 border-destructive/30"
                                 }`}>
                             {status === "processing" && <Loader2 className="h-5 w-5 text-primary animate-spin mt-0.5 shrink-0" />}
                             {status === "success" && <CheckCircle2 className="h-5 w-5 text-green-400 mt-0.5 shrink-0" />}
