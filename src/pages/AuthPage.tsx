@@ -20,11 +20,14 @@ const AuthPage = () => {
   const [name, setName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
-  // Redirect if already logged in
-  if (user && role) {
-    navigate(role === "merchant" ? "/merchant" : "/customer", { replace: true });
-    return null;
-  }
+  // Redirect if already logged in (MUST be in useEffect, or it causes a black screen crash in production!)
+  useEffect(() => {
+    if (user && role) {
+      navigate(role === "merchant" ? "/merchant" : "/customer", { replace: true });
+    }
+  }, [user, role, navigate]);
+
+  if (user && role) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
