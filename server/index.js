@@ -56,16 +56,22 @@ const app = express();
 const server = http.createServer(app);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
 
+// Allow any local network or localhost origin (for LAN testing on phones)
+function corsOrigin(origin, callback) {
+    if (!origin) return callback(null, true); // non-browser (curl etc.)
+    const allowed =
+        /^http:\/\/localhost(:\d+)?$/.test(origin) ||
+        /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin) ||
+        /^http:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/.test(origin) ||
+        /^http:\/\/172\.(1[6-9]|2\d|3[01])\.\d+\.\d+(:\d+)?$/.test(origin);
+    callback(allowed ? null : new Error("CORS blocked"), allowed);
+}
+
 const io = new Server(server, {
-    cors: {
-        origin: [FRONTEND_URL, "http://localhost:8080", "http://localhost:5173"],
-        methods: ["GET", "POST"],
-    },
+    cors: { origin: corsOrigin, methods: ["GET", "POST"] },
 });
 
-app.use(cors({
-    origin: [FRONTEND_URL, "http://localhost:8080", "http://localhost:5173"],
-}));
+app.use(cors({ origin: corsOrigin }));
 app.use("/api/webhook/razorpay", express.raw({ type: "application/json" }));
 app.use((req, res, next) => {
     if (req.path === "/api/webhook/razorpay") return next();
