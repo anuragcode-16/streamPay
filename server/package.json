@@ -1,0 +1,23 @@
+{
+    "name": "pulse-pay-server",
+    "version": "1.0.0",
+    "description": "Steam Pay Express backend with Socket.IO, Razorpay, and atomic wallet worker",
+    "main": "index.js",
+    "type": "commonjs",
+    "scripts": {
+        "dev": "node --watch index.js",
+        "start": "node index.js",
+        "seed": "node seed.js",
+        "gen-qr": "node gen-qr.js"
+    },
+    "dependencies": {
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.7",
+        "express": "^4.21.2",
+        "pg": "^8.13.3",
+        "razorpay": "^2.9.6",
+        "socket.io": "^4.8.1",
+        "uuid": "^11.1.0"
+    },
+    "devDependencies": {}
+}

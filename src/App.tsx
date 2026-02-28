@@ -9,6 +9,10 @@ import Index from "./pages/Index";
 import AuthPage from "./pages/AuthPage";
 import MerchantDashboard from "./pages/MerchantDashboard";
 import CustomerDashboard from "./pages/CustomerDashboard";
+import CameraQR from "./pages/CameraQR";
+import NearbyPage from "./pages/NearbyPage";
+import InvoicePage from "./pages/InvoicePage";
+import WalletPage from "./pages/WalletPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -23,6 +27,8 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<AuthPage />} />
+
+            {/* Merchant — protected */}
             <Route
               path="/merchant"
               element={
@@ -31,6 +37,8 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+
+            {/* Customer — protected */}
             <Route
               path="/customer"
               element={
@@ -39,6 +47,13 @@ const App = () => (
                 </ProtectedRoute>
               }
             />
+
+            {/* Public / semi-public */}
+            <Route path="/scan" element={<CameraQR />} />
+            <Route path="/nearby" element={<NearbyPage />} />
+            <Route path="/wallet" element={<WalletPage />} />
+            <Route path="/invoice/:sessionId" element={<InvoicePage />} />
+
             <Route path="*" element={<NotFound />} />
           </Routes>
         </AuthProvider>
