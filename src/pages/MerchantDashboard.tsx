@@ -128,14 +128,15 @@ export default function MerchantDashboard() {
       });
     });
 
-    socket.on("payment:success", ({ sessionId, paymentId, amountPaise, method }: any) => {
+    socket.on("payment:success", ({ sessionId, paymentId, amountPaise, amountUSDC, method, txHash }: any) => {
       setLiveSessions(prev => {
         const m = new Map(prev); const s = m.get(sessionId);
         if (s) m.set(sessionId, { ...s, status: "paid", paymentId });
         return m;
       });
-      setPayments(prev => [{ sessionId, paymentId, amountPaise, method, receivedAt: new Date().toISOString() }, ...prev]);
-      toast({ title: `💰 ₹${(amountPaise / 100).toFixed(2)} received via ${method}!` });
+      setPayments(prev => [{ sessionId, paymentId, amountPaise: amountPaise || 0, method: method || "x402-usdc", receivedAt: new Date().toISOString(), amountUSDC, txHash }, ...prev]);
+      const usdcStr = amountUSDC ? ` ($${parseFloat(amountUSDC).toFixed(4)} USDC)` : ``;
+      toast({ title: `💰 Payment received${usdcStr}`, description: txHash ? `txHash: ${String(txHash).slice(0, 18)}…` : `via ${method || "x402"}` });
     });
 
     return () => { socket.disconnect(); };
@@ -612,19 +613,20 @@ export default function MerchantDashboard() {
           {/* ── QR CODES ───────────────────────────────────────────────────── */}
           {tab === "qr" && (
             <div className="space-y-5">
-              <h2 className="font-display text-2xl font-bold text-foreground">QR Codes</h2>
-              <p className="text-sm text-muted-foreground">Print and place these at your location. Merchant ID: <span className="font-mono text-primary">{merchantId}</span></p>
-              <div className="grid gap-6 sm:grid-cols-2">
-                {[{ label: "START QR — Customer scans to begin session", qr: qrPayloads.start, border: "border-primary/30" },
-                { label: "STOP QR — Customer scans to end & pay", qr: qrPayloads.stop, border: "border-destructive/30" }].map(({ label, qr, border }) => (
-                  <div key={label} className={`glass rounded-2xl p-5 border ${border} text-center`}>
-                    <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
-                    <div className="flex justify-center rounded-xl bg-white p-4 mb-3">
-                      <QRCode value={qr} size={160} />
-                    </div>
-                    <p className="font-mono text-xs text-muted-foreground break-all">{qr.slice(0, 50)}…</p>
-                  </div>
-                ))}
+              <h2 className="font-display text-2xl font-bold text-foreground">Session Setup</h2>
+              <div className="glass rounded-2xl p-5 border border-primary/20 bg-primary/5">
+                <p className="text-sm font-semibold text-foreground mb-1">🔵 x402 Payments Active</p>
+                <p className="text-sm text-muted-foreground">Customers use the SteamPay Customer Dashboard to start and stop sessions. They pay in <strong className="text-foreground">USDC on Base Sepolia</strong> directly from their MetaMask wallet.</p>
+              </div>
+              <div className="glass rounded-2xl p-5 border border-border">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Your Merchant ID</p>
+                <p className="font-mono text-sm text-primary break-all">{merchantId}</p>
+                <p className="text-xs text-muted-foreground mt-2">Share this with customers so they can start sessions for your service.</p>
+              </div>
+              <div className="glass rounded-2xl p-5 border border-border space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Payment Network</p>
+                <p className="text-sm text-foreground">Base Sepolia Testnet (USDC)</p>
+                <a href="https://sepolia.basescan.org" target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">View on Base Sepolia Scan →</a>
               </div>
             </div>
           )}
