@@ -17,7 +17,7 @@ import { Html5Qrcode } from "html5-qrcode";
 import { QrCode, Camera, CameraOff, Play, Square, Loader2, Zap, Wallet, ArrowLeft } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import walletService from "@/services/walletService";
+
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const RZP_KEY = import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_SLAzRB6IuBdDcI";
@@ -144,59 +144,53 @@ export default function CameraQR() {
         }
     }
 
-    // ── Payment choice: wallet deduct → Razorpay fallback ─────────────────────
+    // ── Payment: call server /api/pay-wallet → server emits payment:success ──
     async function openPaymentFlow(sessionId: string, finalPaise: number) {
-        const walletBalance = walletService.getBalance(userId);
-
-        if (walletBalance >= finalPaise) {
-            // Pay from local wallet
-            try {
-                const updated = walletService.debit(userId, finalPaise, sessionId, "Merchant");
-                toast({
-                    title: `✅ ₹${(finalPaise / 100).toFixed(2)} paid from wallet`,
-                    description: `New balance: ₹${(updated.balance_paise / 100).toFixed(2)}`,
-                });
-                navigate("/customer");
-            } catch (e: any) {
-                toast({ title: "Wallet error", description: e.message, variant: "destructive" });
-            }
+        if (finalPaise <= 0) {
+            toast({ title: "Session stopped", description: "No charges" });
+            navigate("/customer");
             return;
         }
-
-        // Not enough wallet balance — create Razorpay order and open checkout
         try {
-            const orderRes = await fetch(`${API_URL}/api/create-order`, {
+            const res = await fetch(`${API_URL}/api/pay-wallet`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ sessionId }),
+                body: JSON.stringify({ userId, sessionId }),
             });
-            const { order } = await orderRes.json();
-            if (!order) throw new Error("Could not create order");
-
-            const loaded = await loadRazorpay();
-            if (!loaded) throw new Error("Razorpay script failed");
-
-            await new Promise<void>(resolve => {
-                const rzp = new window.Razorpay({
-                    key: RZP_KEY,
-                    order_id: order.id,
-                    amount: order.amount,
-                    currency: "INR",
-                    name: "Steam Pay",
-                    description: `Session #${sessionId.slice(0, 8)}`,
-                    theme: { color: "#6366f1" },
-                    prefill: { name: user?.email || "" },
-                    handler: (response: any) => {
-                        toast({ title: "💚 Payment Successful!", description: `ID: ${response.razorpay_payment_id}` });
-                        resolve();
-                        navigate("/customer");
-                    },
-                    modal: { ondismiss: () => { toast({ title: "Payment cancelled", variant: "destructive" }); resolve(); } },
-                });
-                rzp.open();
-            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Payment failed");
+            // Server will emit payment:success and wallet:update via Socket.IO
+            toast({ title: `✅ ₹${(finalPaise / 100).toFixed(2)} paid from wallet!` });
+            navigate("/customer");
         } catch (e: any) {
-            toast({ title: "Payment error", description: e.message, variant: "destructive" });
+            toast({ title: "Wallet payment failed", description: e.message, variant: "destructive" });
+            // Fallback to Razorpay
+            try {
+                const orderRes = await fetch(`${API_URL}/api/create-order`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ sessionId }),
+                });
+                const { order } = await orderRes.json();
+                if (!order) throw new Error("Order unavailable");
+                const loaded = await loadRazorpay();
+                if (!loaded) throw new Error("Razorpay script failed");
+                await new Promise<void>(resolve => {
+                    const rzp = new window.Razorpay({
+                        key: RZP_KEY, order_id: order.id, amount: order.amount, currency: "INR",
+                        name: "Steam Pay", description: `Session #${sessionId.slice(0, 8)}`,
+                        theme: { color: "#6366f1" }, prefill: { name: user?.email || "" },
+                        handler: (response: any) => {
+                            toast({ title: "💚 Payment Successful!", description: `ID: ${response.razorpay_payment_id}` });
+                            resolve(); navigate("/customer");
+                        },
+                        modal: { ondismiss: () => { toast({ title: "Payment cancelled", variant: "destructive" }); resolve(); } },
+                    });
+                    rzp.open();
+                });
+            } catch (rzpErr: any) {
+                toast({ title: "Payment error", description: rzpErr.message, variant: "destructive" });
+            }
         }
     }
 

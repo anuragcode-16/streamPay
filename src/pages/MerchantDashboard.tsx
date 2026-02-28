@@ -141,8 +141,19 @@ export default function MerchantDashboard() {
     return () => { socket.disconnect(); };
   }, [merchantId]);
 
-  // Fetch services + ads on mount
-  useEffect(() => { fetchServices(); fetchAds(); }, [merchantId]);
+  // Fetch services + ads + active sessions on mount
+  useEffect(() => { fetchServices(); fetchAds(); fetchActiveSessions(); }, [merchantId]);
+
+  async function fetchActiveSessions() {
+    try {
+      const r = await fetch(`${API_URL}/api/sessions/active/${merchantId}`);
+      const d = await r.json();
+      if (!r.ok) return;
+      const map = new Map<string, LiveSession>();
+      (d.sessions || []).forEach((s: any) => map.set(s.sessionId, s));
+      setLiveSessions(map);
+    } catch { /* server offline */ }
+  }
 
   async function fetchServices() {
     try {

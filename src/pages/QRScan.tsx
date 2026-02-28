@@ -100,44 +100,23 @@ export default function QRScan() {
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.error || "Failed to stop session");
 
-                const { order, session } = data;
-                if (!order) {
+                const { finalAmountPaise, session } = data;
+                if (!finalAmountPaise || finalAmountPaise <= 0) {
                     toast({ title: "Session stopped", description: "No charges (empty ledger)" });
                     navigate("/customer");
                     return;
                 }
 
-                // ── Open Razorpay Checkout ──────────────────────────────────────────
-                const ok = await loadRazorpay();
-                if (!ok) throw new Error("Razorpay script failed to load");
-
-                await new Promise<void>((resolve) => {
-                    const rzp = new window.Razorpay({
-                        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-                        order_id: order.id,
-                        amount: order.amount,
-                        currency: "INR",
-                        name: "Steam Pay",
-                        description: `Session #${session?.id?.slice(0, 8)}`,
-                        theme: { color: "#6366f1" },
-                        handler: (response: any) => {
-                            // Optimistic UI success (webhook is the authoritative confirmation)
-                            toast({
-                                title: "💚 Payment Successful!",
-                                description: `Payment ID: ${response.razorpay_payment_id}`,
-                            });
-                            resolve();
-                            navigate("/customer");
-                        },
-                        modal: {
-                            ondismiss: () => {
-                                toast({ title: "Payment cancelled", variant: "destructive" });
-                                resolve();
-                            },
-                        },
-                    });
-                    rzp.open();
+                // Pay via server wallet — emits payment:success to merchant + customer
+                const payRes = await fetch(`${API_URL}/api/pay-wallet`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ userId, sessionId: session?.id }),
                 });
+                const payData = await payRes.json();
+                if (!payRes.ok) throw new Error(payData.error || "Payment failed");
+                toast({ title: `✅ ₹${(finalAmountPaise / 100).toFixed(2)} paid from wallet!`, description: "Payment confirmed" });
+                navigate("/customer");
             }
         } catch (err: any) {
             toast({ title: "Error", description: err.message, variant: "destructive" });

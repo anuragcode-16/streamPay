@@ -1,20 +1,16 @@
 /**
  * CustomerDashboard.tsx — Full MVP Customer View
  *
- * Tabs:
- *   home    — active session card (live timer/cost/wallet balance), nearby CTA, ads
- *   scan    — navigate to /scan (CameraQR page)
- *   wallet  — WalletPage component
- *   nearby  — NearbyPage component
- *   history — full transaction history with invoice links
- *
  * Socket events handled:
  *   session:start   — set active session
  *   session:update  — live elapsed + cost + wallet balance
  *   session:paused  — show low-balance warning
- *   session:stop    — open PaymentChoiceModal
- *   payment:success — show invoice link
- *   wallet:update   — live balance
+ *   session:stop    — call /api/pay-wallet → emits payment:success server-side
+ *   payment:success — show invoice link, clear session
+ *   wallet:update   — live balance from server
+ *
+ * Wallet balance is fetched from /api/wallet/:userId on mount and kept
+ * in sync via socket events (no localStorage for balance display).
  */
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
@@ -22,13 +18,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import { io, Socket } from "socket.io-client";
 import {
   Zap, Wallet, QrCode, MapPin, History, LogOut, Clock,
-  AlertTriangle, CheckCircle2, Loader2, TrendingDown, Download, ArrowUpRight,
+  AlertTriangle, CheckCircle2, Loader2, TrendingDown, Download,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import WalletPage from "./WalletPage";
 import NearbyPage from "./NearbyPage";
-import walletService from "@/services/walletService";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 
@@ -41,7 +36,7 @@ interface ActiveSession {
   serviceType: string; startedAt: string; pricePerMinutePaise: number;
   elapsedSec: number; totalDebitedPaise: number;
   status: "active" | "paused_low_balance" | "stopped";
-  orderId?: string; finalAmountPaise?: number;
+  finalAmountPaise?: number;
   ads?: any[];
 }
 
@@ -61,28 +56,47 @@ export default function CustomerDashboard() {
   const [paymentResult, setPaymentResult] = useState<PaymentResult | null>(null);
   const [transactions, setTransactions] = useState<TxSession[]>([]);
   const [loadingTx, setLoadingTx] = useState(false);
+  const [paying, setPaying] = useState(false);
 
   const localTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const socketRef = useRef<Socket | null>(null);
   const activeSessionRef = useRef<ActiveSession | null>(null);
   const userId = user?.id || "user_demo_customer";
 
-  // Keep ref in sync with state for use inside socket callbacks
+  // Keep ref in sync with state
   useEffect(() => { activeSessionRef.current = activeSession; }, [activeSession]);
 
-  // ── Load wallet balance from localStorage ──────────────────────────────────
+  // ── Fetch wallet balance from server on mount ──────────────────────────────
   useEffect(() => {
-    setWalletPaise(walletService.getBalance(userId));
+    async function fetchWallet() {
+      try {
+        const res = await fetch(`${API_URL}/api/wallet/${userId}`);
+        const data = await res.json();
+        if (data.wallet) setWalletPaise(data.wallet.balance_paise);
+      } catch {
+        // Server offline — show 0
+        setWalletPaise(0);
+      }
+    }
+    fetchWallet();
   }, [userId]);
 
   // ── Socket.IO ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const socket = io(API_URL, { transports: ["websocket", "polling"] });
     socketRef.current = socket;
-    socket.on("connect", () => socket.emit("join:user", userId));
+    socket.on("connect", () => {
+      console.log("[CustomerDashboard] Socket connected, joining user:", userId);
+      socket.emit("join:user", userId);
+    });
 
     socket.on("session:start", (data: any) => {
-      setActiveSession({ sessionId: data.sessionId, merchantId: data.merchantId, merchantName: data.merchantName, serviceType: data.serviceType, startedAt: data.startedAt, pricePerMinutePaise: data.pricePerMinutePaise, elapsedSec: 0, totalDebitedPaise: 0, status: "active", ads: data.ads || [] });
+      setActiveSession({
+        sessionId: data.sessionId, merchantId: data.merchantId,
+        merchantName: data.merchantName, serviceType: data.serviceType,
+        startedAt: data.startedAt, pricePerMinutePaise: data.pricePerMinutePaise,
+        elapsedSec: 0, totalDebitedPaise: 0, status: "active", ads: data.ads || [],
+      });
       setPaymentResult(null);
       toast({ title: "▶️ Session Started!", description: `${data.merchantName} — ₹${(data.pricePerMinutePaise / 100).toFixed(0)}/min` });
     });
@@ -97,26 +111,30 @@ export default function CustomerDashboard() {
       toast({ title: "⚠️ Session Paused — Wallet Low", variant: "destructive" });
     });
 
-    socket.on("session:stop", (data: any) => {
-      setActiveSession(prev => !prev ? prev : { ...prev, status: "stopped", finalAmountPaise: data.finalAmountPaise });
-      if (data.finalAmountPaise > 0) {
-        // ── Auto-deduct from localStorage wallet ──
+    // session:stop → call server /api/pay-wallet → server emits payment:success
+    socket.on("session:stop", async (data: any) => {
+      const { sessionId, finalAmountPaise, durationSec } = data;
+      setActiveSession(prev => !prev ? prev : { ...prev, status: "stopped", finalAmountPaise });
+
+      if (finalAmountPaise > 0) {
+        setPaying(true);
         try {
-          const updated = walletService.debit(
-            userId,
-            data.finalAmountPaise,
-            data.sessionId,
-            activeSessionRef.current?.merchantName || "Merchant"
-          );
-          setWalletPaise(updated.balance_paise);
-          setPaymentResult({ sessionId: data.sessionId, amountPaise: data.finalAmountPaise, method: "wallet", paymentId: `ppw_auto_${Date.now()}` });
-          toast({ title: `✅ ₹${(data.finalAmountPaise / 100).toFixed(2)} deducted from wallet`, description: `Session complete · New balance: ₹${(updated.balance_paise / 100).toFixed(2)}` });
-        } catch {
-          toast({ title: "⚠️ Insufficient wallet balance", description: `Please top up to cover ₹${(data.finalAmountPaise / 100).toFixed(2)}`, variant: "destructive" });
+          const res = await fetch(`${API_URL}/api/pay-wallet`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, sessionId }),
+          });
+          const result = await res.json();
+          if (!res.ok) throw new Error(result.error || "Payment failed");
+          // payment:success socket event will handle UI update
+          if (result.newBalancePaise !== undefined) setWalletPaise(result.newBalancePaise);
+        } catch (err: any) {
+          toast({ title: "Payment error", description: err.message, variant: "destructive" });
+        } finally {
+          setPaying(false);
         }
-        setTimeout(() => setActiveSession(null), 2000);
       } else {
-        setActiveSession(null);
+        setTimeout(() => setActiveSession(null), 1500);
       }
     });
 
@@ -126,12 +144,14 @@ export default function CustomerDashboard() {
       toast({ title: `✅ Paid ₹${(data.amountPaise / 100).toFixed(2)} via ${data.method}!` });
     });
 
-    socket.on("wallet:update", () => { setWalletPaise(walletService.getBalance(userId)); });
+    socket.on("wallet:update", (data: any) => {
+      if (data.balancePaise !== undefined) setWalletPaise(data.balancePaise);
+    });
 
     return () => { socket.disconnect(); };
   }, [userId]);
 
-  // ── Local smooth timer between server ticks ───────────────────────────────
+  // ── Local smooth timer ─────────────────────────────────────────────────────
   useEffect(() => {
     if (localTimerRef.current) clearInterval(localTimerRef.current);
     if (activeSession?.status === "active") {
@@ -224,6 +244,17 @@ export default function CustomerDashboard() {
                 <h1 className="font-display text-3xl font-bold text-foreground">Hello, {profile?.display_name || "Aarav"} 👋</h1>
                 <p className="text-sm text-muted-foreground">Your pay-as-you-use dashboard</p>
               </div>
+
+              {/* Payment processing overlay */}
+              <AnimatePresence>
+                {paying && (
+                  <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                    className="glass rounded-2xl p-4 flex items-center gap-3 border border-primary/30">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <span className="text-sm text-foreground font-medium">Processing payment from wallet…</span>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Payment success banner */}
               <AnimatePresence>

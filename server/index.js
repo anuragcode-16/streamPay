@@ -1,25 +1,29 @@
 /**
- * index.js — Steam Pay Express Server (FULL MVP)
+ * index.js — Steam Pay Express Server (MVP + In-Memory Fallback)
+ *
+ * When DATABASE_URL is unreachable, all data falls back to an in-process
+ * memStore (lost on restart, but fully functional for demo/dev).
  *
  * APIs:
  *  Session lifecycle:
  *    POST /api/start-session
- *    POST /api/stop-session          (returns final amount + payment options)
- *    POST /api/pay-wallet            (atomic wallet debit for final settlement)
- *    POST /api/create-order          (Razorpay order for session or topup)
+ *    POST /api/stop-session          → returns finalAmountPaise
+ *    POST /api/pay-wallet            → atomic debit + emits payment:success
+ *    POST /api/create-order          → Razorpay order (needs real keys)
  *    GET  /api/session/:id
+ *    GET  /api/sessions/active/:merchantId  ← NEW (dashboard hydration)
  *
  *  Merchants & Services:
  *    POST /api/create-merchant
  *    GET  /api/merchant/:id
- *    POST /api/merchant/service      (add service to merchant)
+ *    POST /api/merchant/service
  *    GET  /api/merchant/:id/services
- *    GET  /api/nearby?lat=&lng=&r=   (OSM + DB nearby)
+ *    GET  /api/nearby
  *
  *  Wallet:
  *    POST /api/wallet/create
- *    GET  /api/wallet/:userId
- *    POST /api/wallet/topup          (create Razorpay order for topup)
+ *    GET  /api/wallet/:userId      ← returns memStore balance if DB offline
+ *    POST /api/wallet/topup
  *    GET  /api/wallet/transactions/:userId
  *
  *  Ads:
@@ -31,7 +35,7 @@
  *    GET  /api/invoice/:sessionId
  *
  *  Webhook:
- *    POST /api/webhook/razorpay      (HMAC verified, handles session payments + topups)
+ *    POST /api/webhook/razorpay
  */
 require("dotenv").config();
 const express = require("express");
@@ -39,27 +43,136 @@ const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
 const { v4: uuidv4 } = require("uuid");
-const https = require("https");
 
-const db = require("./db");
+let db;
+try { db = require("./db"); } catch { db = null; }
+
+let razorpayModule;
+try { razorpayModule = require("./razorpay"); } catch { razorpayModule = null; }
+
 const worker = require("./worker");
-const { createOrder, verifyWebhookSignature } = require("./razorpay");
 
 const app = express();
 const server = http.createServer(app);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
 
 const io = new Server(server, {
-    cors: { origin: FRONTEND_URL, methods: ["GET", "POST"] },
+    cors: {
+        origin: [FRONTEND_URL, "http://localhost:8080", "http://localhost:5173"],
+        methods: ["GET", "POST"],
+    },
 });
 
-app.use(cors({ origin: FRONTEND_URL }));
-// Raw body for webhook HMAC
+app.use(cors({
+    origin: [FRONTEND_URL, "http://localhost:8080", "http://localhost:5173"],
+}));
 app.use("/api/webhook/razorpay", express.raw({ type: "application/json" }));
 app.use((req, res, next) => {
     if (req.path === "/api/webhook/razorpay") return next();
     express.json()(req, res, next);
 });
+
+// ─── In-Memory Store (DB fallback) ───────────────────────────────────────────
+/**
+ * memStore holds all runtime state when Postgres is unavailable.
+ * Structure:
+ *   sessions : Map<sessionId, sessionObj>
+ *   wallets  : Map<userId,    { balance_paise, wallet_id }>
+ *   ledger   : Map<sessionId, [{ amount_paise, ts }]>
+ *   payments : Map<sessionId, paymentObj>
+ *   merchants: Map<merchantId, merchantObj>
+ */
+const memStore = {
+    sessions: new Map(),
+    wallets: new Map(),
+    ledger: new Map(),
+    payments: new Map(),
+    merchants: new Map(),
+
+    // ── Demo merchant always available ─────────────────────────────────────
+    _init() {
+        if (!this.merchants.has("m_demo_gym001")) {
+            this.merchants.set("m_demo_gym001", {
+                id: "m_demo_gym001",
+                name: "PowerZone Gym",
+                service_type: "gym",
+                price_per_minute_paise: 200,
+                location: "Demo Location",
+                lat: null,
+                lng: null,
+            });
+        }
+    },
+
+    getWallet(userId) {
+        if (!this.wallets.has(userId)) {
+            this.wallets.set(userId, { balance_paise: 50000, wallet_id: `ppw_${userId.slice(0, 8)}` });
+        }
+        return this.wallets.get(userId);
+    },
+
+    debitWallet(userId, amount) {
+        const w = this.getWallet(userId);
+        if (w.balance_paise < amount) return null;
+        w.balance_paise -= amount;
+        return w;
+    },
+
+    creditWallet(userId, amount) {
+        const w = this.getWallet(userId);
+        w.balance_paise += amount;
+        return w;
+    },
+
+    addLedger(sessionId, userId, merchantId, amount) {
+        if (!this.ledger.has(sessionId)) this.ledger.set(sessionId, []);
+        this.ledger.get(sessionId).push({ amount_paise: amount, ts: new Date(), user_id: userId, merchant_id: merchantId });
+    },
+
+    getLedgerTotal(sessionId) {
+        const rows = this.ledger.get(sessionId) || [];
+        return rows.reduce((s, r) => s + r.amount_paise, 0);
+    },
+};
+memStore._init();
+
+// Check DB connectivity
+let dbOnline = false;
+async function checkDb() {
+    if (!db) return;
+    try {
+        await db.query("SELECT 1");
+        dbOnline = true;
+        console.log("[DB] Connected ✅");
+    } catch (e) {
+        dbOnline = false;
+        console.warn("[DB] Offline — using in-memory store 🔶");
+    }
+}
+checkDb();
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function decodeQRPayload(raw) {
+    try { return JSON.parse(raw); } catch { }
+    try { return JSON.parse(Buffer.from(raw, "base64").toString("utf8")); } catch { }
+    return null;
+}
+
+function generateWalletId() {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let id = "PPW-";
+    for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)];
+    return id;
+}
+
+function haversine(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
@@ -77,204 +190,191 @@ io.on("connection", (socket) => {
     });
 });
 
-worker.init(io);
+worker.init(io, memStore, () => dbOnline);
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function decodeQRPayload(raw) {
-    try { return JSON.parse(raw); } catch { }
-    try { return JSON.parse(Buffer.from(raw, "base64").toString("utf8")); } catch { }
-    return null;
-}
-
-/** Generate a wallet ID in PPW-XXXXXXXX format */
-function generateWalletId() {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    let id = "PPW-";
-    for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)];
-    return id;
-}
-
-// Haversine distance (km) between two lat/lng points
-function haversine(lat1, lng1, lat2, lng2) {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a = Math.sin(dLat / 2) ** 2 +
-        Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-// ─── Health & Root ─────────────────────────────────────────────────────────────
-app.get("/", (_, res) => res.send(`<h2>Steam Pay Backend is running! 🚀</h2><p>API endpoints are active.</p>`));
-app.get("/health", (_, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+// ─── Health ───────────────────────────────────────────────────────────────────
+app.get("/", (_, res) => res.send(`<h2>Steam Pay Backend 🚀</h2><p>DB: ${dbOnline ? "online" : "in-memory"}</p>`));
+app.get("/health", (_, res) => res.json({ ok: true, dbOnline, ts: new Date().toISOString() }));
 
 // ═════════════════════════════════════════════════════════════════════════════
 // WALLET APIs
 // ═════════════════════════════════════════════════════════════════════════════
 
-// POST /api/wallet/create
 app.post("/api/wallet/create", async (req, res) => {
     const { userId, displayName } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
-
-    try {
-        // Check if wallet already exists
-        const existing = await db.query("SELECT * FROM wallets WHERE user_id = $1", [userId]);
-        if (existing.rowCount > 0) return res.json({ wallet: existing.rows[0] });
-
-        const walletId = generateWalletId();
-        const name = displayName || `Wallet-${userId.slice(0, 6)}`;
-        const result = await db.query(
-            `INSERT INTO wallets (wallet_id, user_id, display_name, balance_paise)
-       VALUES ($1, $2, $3, 0) RETURNING *`,
-            [walletId, userId, name]
-        );
-        res.json({ wallet: result.rows[0] });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const existing = await db.query("SELECT * FROM wallets WHERE user_id = $1", [userId]);
+            if (existing.rowCount > 0) return res.json({ wallet: existing.rows[0] });
+            const walletId = generateWalletId();
+            const name = displayName || `Wallet-${userId.slice(0, 6)}`;
+            const result = await db.query(
+                `INSERT INTO wallets (wallet_id, user_id, display_name, balance_paise) VALUES ($1, $2, $3, 0) RETURNING *`,
+                [walletId, userId, name]
+            );
+            return res.json({ wallet: result.rows[0] });
+        } catch (err) {
+            console.warn("[wallet/create] DB error, using memStore:", err.message);
+        }
     }
+    const w = memStore.getWallet(userId);
+    res.json({ wallet: { wallet_id: w.wallet_id, user_id: userId, balance_paise: w.balance_paise } });
 });
 
-// GET /api/wallet/:userId
 app.get("/api/wallet/:userId", async (req, res) => {
-    try {
-        const result = await db.query(
-            "SELECT * FROM wallets WHERE user_id = $1",
-            [req.params.userId]
-        );
-        if (result.rowCount === 0) return res.status(404).json({ error: "No wallet found" });
-        res.json({ wallet: result.rows[0] });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const result = await db.query("SELECT * FROM wallets WHERE user_id = $1", [req.params.userId]);
+            if (result.rowCount > 0) return res.json({ wallet: result.rows[0] });
+        } catch (err) {
+            console.warn("[wallet/get] DB error:", err.message);
+        }
     }
+    const w = memStore.getWallet(req.params.userId);
+    res.json({ wallet: { wallet_id: w.wallet_id, user_id: req.params.userId, balance_paise: w.balance_paise } });
 });
 
-// POST /api/wallet/topup — create Razorpay order for wallet top-up
 app.post("/api/wallet/topup", async (req, res) => {
     const { userId, amountINR } = req.body;
     if (!userId || !amountINR || amountINR <= 0) {
         return res.status(400).json({ error: "userId and amountINR (positive) required" });
     }
-
     const amountPaise = Math.round(parseFloat(amountINR) * 100);
     if (amountPaise < 100) return res.status(400).json({ error: "Minimum top-up is ₹1" });
 
-    try {
-        const walletRes = await db.query("SELECT * FROM wallets WHERE user_id = $1", [userId]);
-        if (walletRes.rowCount === 0) return res.status(404).json({ error: "Wallet not found. Create one first." });
-        const wallet = walletRes.rows[0];
-
-        const topupId = uuidv4();
-        // Create order with receipt referencing topup
-        const order = await createOrder(amountPaise, `topup_${topupId}`);
-
-        // Record pending wallet transaction
-        await db.query(
-            `INSERT INTO wallet_transactions
-         (id, wallet_id, user_id, type, amount_paise, status, razorpay_order_id, created_at)
-       VALUES ($1, $2, $3, 'topup', $4, 'pending', $5, NOW())`,
-            [topupId, wallet.wallet_id, userId, amountPaise, order.id]
-        );
-
-        res.json({ order, amountPaise, walletId: wallet.wallet_id });
-    } catch (err) {
-        console.error("[wallet/topup]", err);
-        res.status(500).json({ error: err.message });
+    // Try Razorpay if keys available and DB is online
+    if (dbOnline && razorpayModule) {
+        try {
+            const walletRes = await db.query("SELECT * FROM wallets WHERE user_id = $1", [userId]);
+            if (walletRes.rowCount === 0) return res.status(404).json({ error: "Wallet not found" });
+            const wallet = walletRes.rows[0];
+            const topupId = uuidv4();
+            const order = await razorpayModule.createOrder(amountPaise, `topup_${topupId}`);
+            await db.query(
+                `INSERT INTO wallet_transactions (id, wallet_id, user_id, type, amount_paise, status, razorpay_order_id, created_at)
+                 VALUES ($1, $2, $3, 'topup', $4, 'pending', $5, NOW())`,
+                [topupId, wallet.wallet_id, userId, amountPaise, order.id]
+            );
+            return res.json({ order, amountPaise, walletId: wallet.wallet_id });
+        } catch (err) { console.warn("[wallet/topup] DB/Razorpay error:", err.message); }
     }
+
+    // In-memory topup — immediately credit (no Razorpay for demo)
+    const updated = memStore.creditWallet(userId, amountPaise);
+    io.to(`user:${userId}`).emit("wallet:update", { balancePaise: updated.balance_paise, event: "topup", amountPaise });
+    res.json({ ok: true, newBalancePaise: updated.balance_paise, amountPaise, note: "In-memory topup (no Razorpay)" });
 });
 
-// GET /api/wallet/transactions/:userId
 app.get("/api/wallet/transactions/:userId", async (req, res) => {
-    try {
-        const result = await db.query(
-            `SELECT * FROM wallet_transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`,
-            [req.params.userId]
-        );
-        res.json({ transactions: result.rows });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const result = await db.query(
+                `SELECT * FROM wallet_transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`,
+                [req.params.userId]
+            );
+            return res.json({ transactions: result.rows });
+        } catch (err) { console.warn("[wallet/transactions] DB error:", err.message); }
     }
+    // Build from memStore ledger
+    const txs = [];
+    for (const [sessionId, entries] of memStore.ledger.entries()) {
+        for (const e of entries) {
+            if (e.user_id === req.params.userId) {
+                txs.push({ type: "debit", amount_paise: e.amount_paise, session_id: sessionId, created_at: e.ts, status: "completed" });
+            }
+        }
+    }
+    res.json({ transactions: txs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
-// POST /api/pay-wallet — pay session final amount from wallet
+// POST /api/pay-wallet — atomic wallet deduction → emits payment:success
 app.post("/api/pay-wallet", async (req, res) => {
     const { userId, sessionId } = req.body;
     if (!userId || !sessionId) return res.status(400).json({ error: "userId and sessionId required" });
 
-    const client = await db.getClient();
-    try {
-        await client.query("BEGIN");
-
-        const sesRes = await client.query("SELECT * FROM sessions WHERE id = $1", [sessionId]);
-        if (sesRes.rowCount === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Session not found" }); }
-        const session = sesRes.rows[0];
-
-        if (session.payment_status === "paid") { await client.query("ROLLBACK"); return res.status(409).json({ error: "Already paid" }); }
-
-        const finalAmountPaise = session.final_amount_paise || 0;
-        if (finalAmountPaise <= 0) { await client.query("ROLLBACK"); return res.status(400).json({ error: "No amount to charge" }); }
-
-        // Atomic wallet debit
-        const walletRes = await client.query(
-            `UPDATE wallets SET balance_paise = balance_paise - $1 WHERE user_id = $2 AND balance_paise >= $1 RETURNING *`,
-            [finalAmountPaise, userId]
-        );
-        if (walletRes.rowCount === 0) {
+    if (dbOnline) {
+        const client = await db.getClient();
+        try {
+            await client.query("BEGIN");
+            const sesRes = await client.query("SELECT * FROM sessions WHERE id = $1", [sessionId]);
+            if (sesRes.rowCount === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Session not found" }); }
+            const session = sesRes.rows[0];
+            if (session.payment_status === "paid") { await client.query("ROLLBACK"); return res.status(409).json({ error: "Already paid" }); }
+            const finalAmountPaise = session.final_amount_paise || 0;
+            if (finalAmountPaise <= 0) { await client.query("ROLLBACK"); return res.status(400).json({ error: "No amount to charge" }); }
+            const walletRes = await client.query(
+                `UPDATE wallets SET balance_paise = balance_paise - $1 WHERE user_id = $2 AND balance_paise >= $1 RETURNING *`,
+                [finalAmountPaise, userId]
+            );
+            if (walletRes.rowCount === 0) { await client.query("ROLLBACK"); return res.status(402).json({ error: "Insufficient wallet balance" }); }
+            const paymentId = `ppw_${uuidv4().replace(/-/g, "").slice(0, 16)}`;
+            await client.query(
+                `INSERT INTO payments (id, user_id, merchant_id, session_id, order_id, payment_id, amount_paise, status, method)
+                 VALUES ($1, $2, $3, $4, 'wallet', $5, $6, 'paid', 'wallet')`,
+                [uuidv4(), userId, session.merchant_id, sessionId, paymentId, finalAmountPaise]
+            );
+            await client.query("UPDATE sessions SET payment_status = 'paid' WHERE id = $1", [sessionId]);
+            await client.query(
+                `INSERT INTO merchant_payable (merchant_id, session_id, amount_paise, payment_id, credited_at)
+                 VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (payment_id) DO NOTHING`,
+                [session.merchant_id, sessionId, finalAmountPaise, paymentId]
+            );
+            await client.query("COMMIT");
+            const successPayload = { sessionId, paymentId, amountPaise: finalAmountPaise, method: "wallet" };
+            io.to(`merchant:${session.merchant_id}`).emit("payment:success", successPayload);
+            io.to(`user:${userId}`).emit("payment:success", successPayload);
+            io.to(`user:${userId}`).emit("wallet:update", { balancePaise: walletRes.rows[0].balance_paise });
+            return res.json({ ok: true, paymentId, newBalancePaise: walletRes.rows[0].balance_paise });
+        } catch (err) {
             await client.query("ROLLBACK");
-            return res.status(402).json({ error: "Insufficient wallet balance" });
-        }
+            console.error("[pay-wallet] DB error:", err.message);
+        } finally { client.release(); }
+    }
 
-        const paymentId = `ppw_${uuidv4().replace(/-/g, "").slice(0, 16)}`;
+    // ── In-memory pay-wallet ──────────────────────────────────────────────────
+    const session = memStore.sessions.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.payment_status === "paid") return res.status(409).json({ error: "Already paid" });
 
-        // Record payment
-        await client.query(
-            `INSERT INTO payments (id, user_id, merchant_id, session_id, order_id, payment_id, amount_paise, status, method)
-       VALUES ($1, $2, $3, $4, 'wallet', $5, $6, 'paid', 'wallet')`,
-            [uuidv4(), userId, session.merchant_id, sessionId, paymentId, finalAmountPaise]
-        );
-
-        // Mark session paid
-        await client.query("UPDATE sessions SET payment_status = 'paid' WHERE id = $1", [sessionId]);
-
-        // Credit merchant payable
-        await client.query(
-            `INSERT INTO merchant_payable (merchant_id, session_id, amount_paise, payment_id, credited_at)
-       VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (payment_id) DO NOTHING`,
-            [session.merchant_id, sessionId, finalAmountPaise, paymentId]
-        );
-
-        // Wallet transaction record
-        await client.query(
-            `INSERT INTO wallet_transactions (id, wallet_id, user_id, type, amount_paise, status, session_id, created_at)
-       SELECT $1, wallet_id, $2, 'payment', $3, 'completed', $4, NOW() FROM wallets WHERE user_id = $2`,
-            [uuidv4(), userId, finalAmountPaise, sessionId]
-        );
-
-        await client.query("COMMIT");
-
-        // Emit events after commit
-        const successPayload = { sessionId, paymentId, amountPaise: finalAmountPaise, method: "wallet" };
+    const finalAmountPaise = session.final_amount_paise || memStore.getLedgerTotal(sessionId);
+    if (finalAmountPaise <= 0) {
+        // Nothing to charge — just mark as paid
+        session.payment_status = "paid";
+        const paymentId = `ppw_free_${Date.now()}`;
+        const successPayload = { sessionId, paymentId, amountPaise: 0, method: "wallet" };
         io.to(`merchant:${session.merchant_id}`).emit("payment:success", successPayload);
         io.to(`user:${userId}`).emit("payment:success", successPayload);
-        io.to(`user:${userId}`).emit("wallet:update", { balancePaise: walletRes.rows[0].balance_paise });
-
-        res.json({ ok: true, paymentId, newBalancePaise: walletRes.rows[0].balance_paise });
-    } catch (err) {
-        await client.query("ROLLBACK");
-        console.error("[pay-wallet]", err);
-        res.status(500).json({ error: err.message });
-    } finally {
-        client.release();
+        return res.json({ ok: true, paymentId, newBalancePaise: memStore.getWallet(userId).balance_paise });
     }
+
+    const updatedWallet = memStore.debitWallet(userId, finalAmountPaise);
+    if (!updatedWallet) {
+        return res.status(402).json({ error: "Insufficient wallet balance" });
+    }
+
+    const paymentId = `ppw_${uuidv4().replace(/-/g, "").slice(0, 16)}`;
+    session.payment_status = "paid";
+    memStore.payments.set(sessionId, {
+        sessionId, paymentId, amountPaise: finalAmountPaise, method: "wallet",
+        userId, merchantId: session.merchant_id, createdAt: new Date().toISOString(),
+    });
+
+    const successPayload = { sessionId, paymentId, amountPaise: finalAmountPaise, method: "wallet" };
+    io.to(`merchant:${session.merchant_id}`).emit("payment:success", successPayload);
+    io.to(`user:${userId}`).emit("payment:success", successPayload);
+    io.to(`user:${userId}`).emit("wallet:update", { balancePaise: updatedWallet.balance_paise });
+
+    console.log(`[pay-wallet] MemStore: ${userId} paid ₹${finalAmountPaise / 100} for session ${sessionId}`);
+    res.json({ ok: true, paymentId, newBalancePaise: updatedWallet.balance_paise });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MERCHANT APIS
+// MERCHANT APIs
 // ═════════════════════════════════════════════════════════════════════════════
 
 const VALID_SERVICE_TYPES = ["gym", "ev", "parking", "coworking", "wifi", "spa", "vending"];
 
-// POST /api/create-merchant
 app.post("/api/create-merchant", async (req, res) => {
     const { name, serviceType, pricePerMinute, location, lat, lng, userId } = req.body;
     if (!name || !VALID_SERVICE_TYPES.includes(serviceType)) {
@@ -283,129 +383,177 @@ app.post("/api/create-merchant", async (req, res) => {
     const pricePerMinutePaise = Math.round(parseFloat(pricePerMinute || "2") * 100);
     const merchantId = `m_${uuidv4().replace(/-/g, "").slice(0, 12)}`;
 
-    try {
-        const result = await db.query(
-            `INSERT INTO merchants (id, name, service_type, price_per_minute_paise, location, lat, lng, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-            [merchantId, name, serviceType, pricePerMinutePaise, location || "", lat || null, lng || null, userId || null]
-        );
-
-        const startQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "start" })).toString("base64");
-        const stopQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "stop" })).toString("base64");
-
-        res.json({ merchant: result.rows[0], qr: { start: startQR, stop: stopQR } });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const result = await db.query(
+                `INSERT INTO merchants (id, name, service_type, price_per_minute_paise, location, lat, lng, user_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+                [merchantId, name, serviceType, pricePerMinutePaise, location || "", lat || null, lng || null, userId || null]
+            );
+            const startQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "start" })).toString("base64");
+            const stopQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "stop" })).toString("base64");
+            return res.json({ merchant: result.rows[0], qr: { start: startQR, stop: stopQR } });
+        } catch (err) { console.warn("[create-merchant] DB error:", err.message); }
     }
+    const merchant = { id: merchantId, name, service_type: serviceType, price_per_minute_paise: pricePerMinutePaise, location: location || "", lat: lat || null, lng: lng || null };
+    memStore.merchants.set(merchantId, merchant);
+    const startQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "start" })).toString("base64");
+    const stopQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "stop" })).toString("base64");
+    res.json({ merchant, qr: { start: startQR, stop: stopQR } });
 });
 
-// GET /api/merchant/:id
 app.get("/api/merchant/:id", async (req, res) => {
-    try {
-        const r = await db.query("SELECT * FROM merchants WHERE id = $1", [req.params.id]);
-        if (r.rowCount === 0) return res.status(404).json({ error: "Not found" });
-        res.json(r.rows[0]);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const r = await db.query("SELECT * FROM merchants WHERE id = $1", [req.params.id]);
+            if (r.rowCount > 0) return res.json(r.rows[0]);
+        } catch (err) { console.warn("[merchant/get] DB error:", err.message); }
+    }
+    const m = memStore.merchants.get(req.params.id);
+    if (!m) return res.status(404).json({ error: "Not found" });
+    res.json(m);
 });
 
-// POST /api/merchant/service — add service to a merchant
 app.post("/api/merchant/service", async (req, res) => {
     const { merchantId, serviceType, pricePerMinute, description } = req.body;
     if (!merchantId || !serviceType) return res.status(400).json({ error: "merchantId and serviceType required" });
-
     const pricePerMinutePaise = Math.round(parseFloat(pricePerMinute || "2") * 100);
     const serviceId = `svc_${uuidv4().replace(/-/g, "").slice(0, 10)}`;
-
-    try {
-        const result = await db.query(
-            `INSERT INTO merchant_services (id, merchant_id, service_type, price_per_minute_paise, description)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [serviceId, merchantId, serviceType, pricePerMinutePaise, description || ""]
-        );
-
-        // Generate QR for this specific service
-        const startQR = Buffer.from(JSON.stringify({ merchantId, merchantServiceId: serviceId, serviceType, action: "start" })).toString("base64");
-        const stopQR = Buffer.from(JSON.stringify({ merchantId, merchantServiceId: serviceId, serviceType, action: "stop" })).toString("base64");
-
-        res.json({ service: result.rows[0], qr: { start: startQR, stop: stopQR } });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const result = await db.query(
+                `INSERT INTO merchant_services (id, merchant_id, service_type, price_per_minute_paise, description) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+                [serviceId, merchantId, serviceType, pricePerMinutePaise, description || ""]
+            );
+            const startQR = Buffer.from(JSON.stringify({ merchantId, merchantServiceId: serviceId, serviceType, action: "start" })).toString("base64");
+            const stopQR = Buffer.from(JSON.stringify({ merchantId, merchantServiceId: serviceId, serviceType, action: "stop" })).toString("base64");
+            return res.json({ service: result.rows[0], qr: { start: startQR, stop: stopQR } });
+        } catch (err) { console.warn("[merchant/service] DB error:", err.message); }
     }
+    const service = { id: serviceId, merchant_id: merchantId, service_type: serviceType, price_per_minute_paise: pricePerMinutePaise, description: description || "" };
+    const startQR = Buffer.from(JSON.stringify({ merchantId, merchantServiceId: serviceId, serviceType, action: "start" })).toString("base64");
+    const stopQR = Buffer.from(JSON.stringify({ merchantId, merchantServiceId: serviceId, serviceType, action: "stop" })).toString("base64");
+    res.json({ service, qr: { start: startQR, stop: stopQR } });
 });
 
-// GET /api/merchant/:id/services
 app.get("/api/merchant/:id/services", async (req, res) => {
-    try {
-        const r = await db.query(
-            "SELECT * FROM merchant_services WHERE merchant_id = $1 ORDER BY created_at",
-            [req.params.id]
-        );
-        res.json({ services: r.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const r = await db.query("SELECT * FROM merchant_services WHERE merchant_id = $1 ORDER BY created_at", [req.params.id]);
+            return res.json({ services: r.rows });
+        } catch (err) { console.warn("[merchant/services] DB error:", err.message); }
+    }
+    res.json({ services: [] });
 });
 
-// GET /api/nearby?lat=&lng=&radius=5
 app.get("/api/nearby", async (req, res) => {
     const { lat, lng, radius = 10 } = req.query;
     if (!lat || !lng) return res.status(400).json({ error: "lat and lng required" });
-
-    try {
-        // Query merchants from DB sorted by Haversine distance
-        const merchants = await db.query(
-            "SELECT *, lat::float AS lat_f, lng::float AS lng_f FROM merchants WHERE lat IS NOT NULL AND lng IS NOT NULL"
-        );
-
-        const nearby = merchants.rows
-            .map((m) => {
+    if (dbOnline) {
+        try {
+            const merchants = await db.query("SELECT *, lat::float AS lat_f, lng::float AS lng_f FROM merchants WHERE lat IS NOT NULL AND lng IS NOT NULL");
+            const nearby = merchants.rows.map(m => {
                 const dist = haversine(parseFloat(lat), parseFloat(lng), m.lat_f, m.lng_f);
                 return { ...m, distanceKm: Math.round(dist * 100) / 100 };
-            })
-            .filter((m) => m.distanceKm <= parseFloat(radius))
-            .sort((a, b) => a.distanceKm - b.distanceKm);
-
-        res.json({ nearby });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+            }).filter(m => m.distanceKm <= parseFloat(radius)).sort((a, b) => a.distanceKm - b.distanceKm);
+            return res.json({ nearby });
+        } catch (err) { console.warn("[nearby] DB error:", err.message); }
     }
+    // Return memStore merchants with lat/lng
+    const nearby = [...memStore.merchants.values()]
+        .filter(m => m.lat && m.lng)
+        .map(m => ({ ...m, distanceKm: haversine(parseFloat(lat), parseFloat(lng), m.lat, m.lng) }))
+        .filter(m => m.distanceKm <= parseFloat(radius))
+        .sort((a, b) => a.distanceKm - b.distanceKm);
+    res.json({ nearby });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// ADVERTISEMENT APIs
+// ADS
 // ═════════════════════════════════════════════════════════════════════════════
 
-// POST /api/ads
+const memAds = new Map(); // merchantId -> [ad]
+
 app.post("/api/ads", async (req, res) => {
     const { merchantId, title, body, imageUrl } = req.body;
     if (!merchantId || !title) return res.status(400).json({ error: "merchantId and title required" });
-    try {
-        const result = await db.query(
-            `INSERT INTO advertisements (id, merchant_id, title, body, image_url, active)
-       VALUES ($1, $2, $3, $4, $5, true) RETURNING *`,
-            [uuidv4(), merchantId, title, body || "", imageUrl || ""]
-        );
-        res.json({ ad: result.rows[0] });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const result = await db.query(
+                `INSERT INTO advertisements (id, merchant_id, title, body, image_url, active) VALUES ($1, $2, $3, $4, $5, true) RETURNING *`,
+                [uuidv4(), merchantId, title, body || "", imageUrl || ""]
+            );
+            return res.json({ ad: result.rows[0] });
+        } catch (err) { console.warn("[ads/create] DB error:", err.message); }
+    }
+    const ad = { id: uuidv4(), merchant_id: merchantId, title, body: body || "", image_url: imageUrl || "", active: true };
+    if (!memAds.has(merchantId)) memAds.set(merchantId, []);
+    memAds.get(merchantId).unshift(ad);
+    res.json({ ad });
 });
 
-// GET /api/ads/:merchantId
 app.get("/api/ads/:merchantId", async (req, res) => {
-    try {
-        const r = await db.query(
-            "SELECT * FROM advertisements WHERE merchant_id = $1 AND active = true ORDER BY created_at DESC",
-            [req.params.merchantId]
-        );
-        res.json({ ads: r.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const r = await db.query("SELECT * FROM advertisements WHERE merchant_id = $1 AND active = true ORDER BY created_at DESC", [req.params.merchantId]);
+            return res.json({ ads: r.rows });
+        } catch (err) { console.warn("[ads/get] DB error:", err.message); }
+    }
+    res.json({ ads: memAds.get(req.params.merchantId) || [] });
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
 // SESSION APIs
 // ═════════════════════════════════════════════════════════════════════════════
 
+// GET /api/sessions/active/:merchantId — hydrate merchant dashboard on mount
+app.get("/api/sessions/active/:merchantId", async (req, res) => {
+    const { merchantId } = req.params;
+    if (dbOnline) {
+        try {
+            const r = await db.query(
+                `SELECT s.*, m.name AS merchant_name, m.price_per_minute_paise
+                 FROM sessions s JOIN merchants m ON m.id = s.merchant_id
+                 WHERE s.merchant_id = $1 AND s.status IN ('active','paused_low_balance')
+                 ORDER BY s.started_at DESC`,
+                [merchantId]
+            );
+            const sessions = await Promise.all(r.rows.map(async (s) => {
+                const led = await db.query("SELECT COALESCE(SUM(amount_paise),0)::int AS total FROM ledger WHERE session_id=$1", [s.id]);
+                const elap = await db.query("SELECT EXTRACT(EPOCH FROM (NOW()-started_at))::int AS e FROM sessions WHERE id=$1", [s.id]);
+                return {
+                    sessionId: s.id, userId: s.user_id, merchantId: s.merchant_id,
+                    merchantName: s.merchant_name, serviceType: s.service_type,
+                    startedAt: s.started_at, pricePerMinutePaise: s.price_per_minute_paise,
+                    elapsedSec: elap.rows[0]?.e || 0,
+                    totalDebitedPaise: led.rows[0]?.total || 0,
+                    status: s.status,
+                };
+            }));
+            return res.json({ sessions });
+        } catch (err) { console.warn("[sessions/active] DB error:", err.message); }
+    }
+    // In-memory
+    const sessions = [...memStore.sessions.values()]
+        .filter(s => s.merchant_id === merchantId && (s.status === "active" || s.status === "paused_low_balance"))
+        .map(s => {
+            const now = Date.now();
+            const elapsedSec = Math.floor((now - new Date(s.started_at).getTime()) / 1000);
+            return {
+                sessionId: s.id, userId: s.user_id, merchantId: s.merchant_id,
+                merchantName: s.merchant_name || "PowerZone Gym",
+                serviceType: s.service_type, startedAt: s.started_at,
+                pricePerMinutePaise: s.price_per_minute_paise,
+                elapsedSec, totalDebitedPaise: memStore.getLedgerTotal(s.id),
+                status: s.status,
+            };
+        });
+    res.json({ sessions });
+});
+
 // POST /api/start-session
 app.post("/api/start-session", async (req, res) => {
     let { userId, merchantId, merchantServiceId, serviceType, payload } = req.body;
-
     if (payload) {
         const d = decodeQRPayload(payload);
         if (!d || d.action !== "start") return res.status(400).json({ error: "Invalid start payload" });
@@ -413,50 +561,72 @@ app.post("/api/start-session", async (req, res) => {
     }
     if (!userId || !merchantId) return res.status(400).json({ error: "userId and merchantId required" });
 
-    try {
-        const mRes = await db.query("SELECT * FROM merchants WHERE id = $1", [merchantId]);
-        if (mRes.rowCount === 0) return res.status(404).json({ error: "Merchant not found" });
-        const merchant = mRes.rows[0];
-
-        // Use service price if serviceId provided
-        let pricePerMinutePaise = merchant.price_per_minute_paise;
-        if (merchantServiceId) {
-            const svcRes = await db.query("SELECT * FROM merchant_services WHERE id = $1", [merchantServiceId]);
-            if (svcRes.rowCount > 0) pricePerMinutePaise = svcRes.rows[0].price_per_minute_paise;
-        }
-
-        // Duplicate active session check
-        const dup = await db.query(
-            "SELECT id FROM sessions WHERE user_id = $1 AND merchant_id = $2 AND status IN ('active','paused_low_balance')",
-            [userId, merchantId]
-        );
-        if (dup.rowCount > 0) return res.status(409).json({ error: "Active session exists", sessionId: dup.rows[0].id });
-
-        // Create session
-        const sessionId = uuidv4();
-        const sesRes = await db.query(
-            `INSERT INTO sessions (id, user_id, merchant_id, merchant_service_id, service_type, started_at, status, payment_status, price_per_minute_paise)
-       VALUES ($1,$2,$3,$4,$5,NOW(),'active','pending',$6) RETURNING *`,
-            [sessionId, userId, merchantId, merchantServiceId || null, serviceType || merchant.service_type, pricePerMinutePaise]
-        );
-        const session = sesRes.rows[0];
-
-        const eventData = {
-            sessionId, userId, merchantId, startedAt: session.started_at,
-            pricePerMinutePaise, serviceType: session.service_type, merchantName: merchant.name
-        };
-        console.log(`[API] start-session success! Emitting 'session:start' to merchant:${merchantId} and user:${userId}`);
-        io.to(`merchant:${merchantId}`).emit("session:start", eventData);
-        io.to(`user:${userId}`).emit("session:start", eventData);
-
-        // Fetch active ads for the merchant
-        const adsRes = await db.query("SELECT * FROM advertisements WHERE merchant_id = $1 AND active = true LIMIT 3", [merchantId]);
-
-        res.json({ session, merchant, ads: adsRes.rows });
-    } catch (err) {
-        console.error("[start-session]", err);
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const mRes = await db.query("SELECT * FROM merchants WHERE id = $1", [merchantId]);
+            if (mRes.rowCount === 0) throw new Error("Merchant not found in DB");
+            const merchant = mRes.rows[0];
+            let pricePerMinutePaise = merchant.price_per_minute_paise;
+            if (merchantServiceId) {
+                const svcRes = await db.query("SELECT * FROM merchant_services WHERE id = $1", [merchantServiceId]);
+                if (svcRes.rowCount > 0) pricePerMinutePaise = svcRes.rows[0].price_per_minute_paise;
+            }
+            const dup = await db.query(
+                "SELECT id FROM sessions WHERE user_id = $1 AND merchant_id = $2 AND status IN ('active','paused_low_balance')",
+                [userId, merchantId]
+            );
+            if (dup.rowCount > 0) return res.status(409).json({ error: "Active session exists", sessionId: dup.rows[0].id });
+            const sessionId = uuidv4();
+            const sesRes = await db.query(
+                `INSERT INTO sessions (id, user_id, merchant_id, merchant_service_id, service_type, started_at, status, payment_status, price_per_minute_paise)
+                 VALUES ($1,$2,$3,$4,$5,NOW(),'active','pending',$6) RETURNING *`,
+                [sessionId, userId, merchantId, merchantServiceId || null, serviceType || merchant.service_type, pricePerMinutePaise]
+            );
+            const session = sesRes.rows[0];
+            const eventData = { sessionId, userId, merchantId, startedAt: session.started_at, pricePerMinutePaise, serviceType: session.service_type, merchantName: merchant.name };
+            io.to(`merchant:${merchantId}`).emit("session:start", eventData);
+            io.to(`user:${userId}`).emit("session:start", eventData);
+            const adsRes = await db.query("SELECT * FROM advertisements WHERE merchant_id = $1 AND active = true LIMIT 3", [merchantId]);
+            return res.json({ session, merchant, ads: adsRes.rows });
+        } catch (err) { console.warn("[start-session] DB error, using memStore:", err.message); }
     }
+
+    // ── In-memory start session ───────────────────────────────────────────────
+    const merchant = memStore.merchants.get(merchantId) || {
+        id: merchantId, name: "PowerZone Gym", service_type: serviceType || "gym",
+        price_per_minute_paise: 200,
+    };
+    const pricePerMinutePaise = merchant.price_per_minute_paise;
+
+    // Duplicate check
+    for (const [, s] of memStore.sessions) {
+        if (s.user_id === userId && s.merchant_id === merchantId && (s.status === "active" || s.status === "paused_low_balance")) {
+            return res.status(409).json({ error: "Active session exists", sessionId: s.id });
+        }
+    }
+
+    const sessionId = uuidv4();
+    const startedAt = new Date().toISOString();
+    const session = {
+        id: sessionId, user_id: userId, merchant_id: merchantId,
+        merchant_name: merchant.name,
+        service_type: serviceType || merchant.service_type,
+        started_at: startedAt, status: "active", payment_status: "pending",
+        price_per_minute_paise: pricePerMinutePaise,
+        final_amount_paise: 0,
+    };
+    memStore.sessions.set(sessionId, session);
+
+    const eventData = {
+        sessionId, userId, merchantId, startedAt,
+        pricePerMinutePaise, serviceType: session.service_type, merchantName: merchant.name,
+    };
+    console.log(`[API] start-session (memStore) → emitting to merchant:${merchantId} and user:${userId}`);
+    io.to(`merchant:${merchantId}`).emit("session:start", eventData);
+    io.to(`user:${userId}`).emit("session:start", eventData);
+
+    const ads = memAds.get(merchantId) || [];
+    res.json({ session, merchant, ads: ads.slice(0, 3) });
 });
 
 // POST /api/stop-session
@@ -469,217 +639,208 @@ app.post("/api/stop-session", async (req, res) => {
     }
     if (!userId || !merchantId) return res.status(400).json({ error: "userId and merchantId required" });
 
-    try {
-        const sesRes = await db.query(
-            "SELECT * FROM sessions WHERE user_id=$1 AND merchant_id=$2 AND status IN ('active','paused_low_balance') ORDER BY started_at DESC LIMIT 1",
-            [userId, merchantId]
-        );
-        if (sesRes.rowCount === 0) return res.status(404).json({ error: "No active session" });
-        const session = sesRes.rows[0];
-
-        // Authoritative final amount from ledger
-        const ledRes = await db.query(
-            "SELECT COALESCE(SUM(amount_paise),0)::int AS total FROM ledger WHERE session_id=$1",
-            [session.id]
-        );
-        const finalAmountPaise = ledRes.rows[0].total;
-
-        const durRes = await db.query(
-            "SELECT EXTRACT(EPOCH FROM (NOW()-started_at))::int AS d FROM sessions WHERE id=$1",
-            [session.id]
-        );
-        const durationSec = durRes.rows[0]?.d || 0;
-
-        await db.query(
-            "UPDATE sessions SET status='stopped', ended_at=NOW(), final_amount_paise=$1 WHERE id=$2",
-            [finalAmountPaise, session.id]
-        );
-
-        // Check wallet balance for settlement option
-        const walletRes = await db.query("SELECT balance_paise FROM wallets WHERE user_id=$1", [userId]);
-        const walletBalance = walletRes.rows[0]?.balance_paise || 0;
-        const canPayWallet = walletBalance >= finalAmountPaise;
-
-        const stopPayload = { sessionId: session.id, durationSec, finalAmountPaise };
-        io.to(`merchant:${merchantId}`).emit("session:stop", stopPayload);
-        io.to(`user:${userId}`).emit("session:stop", stopPayload);
-
-        res.json({
-            session: { ...session, status: "stopped", final_amount_paise: finalAmountPaise, duration_sec: durationSec },
-            finalAmountPaise, durationSec, walletBalance, canPayWallet,
-        });
-    } catch (err) {
-        console.error("[stop-session]", err);
-        res.status(500).json({ error: err.message });
+    if (dbOnline) {
+        try {
+            const sesRes = await db.query(
+                "SELECT * FROM sessions WHERE user_id=$1 AND merchant_id=$2 AND status IN ('active','paused_low_balance') ORDER BY started_at DESC LIMIT 1",
+                [userId, merchantId]
+            );
+            if (sesRes.rowCount === 0) throw new Error("No active session in DB");
+            const session = sesRes.rows[0];
+            const ledRes = await db.query("SELECT COALESCE(SUM(amount_paise),0)::int AS total FROM ledger WHERE session_id=$1", [session.id]);
+            const finalAmountPaise = ledRes.rows[0].total;
+            const durRes = await db.query("SELECT EXTRACT(EPOCH FROM (NOW()-started_at))::int AS d FROM sessions WHERE id=$1", [session.id]);
+            const durationSec = durRes.rows[0]?.d || 0;
+            await db.query("UPDATE sessions SET status='stopped', ended_at=NOW(), final_amount_paise=$1 WHERE id=$2", [finalAmountPaise, session.id]);
+            const walletRes = await db.query("SELECT balance_paise FROM wallets WHERE user_id=$1", [userId]);
+            const walletBalance = walletRes.rows[0]?.balance_paise || 0;
+            const stopPayload = { sessionId: session.id, durationSec, finalAmountPaise };
+            io.to(`merchant:${merchantId}`).emit("session:stop", stopPayload);
+            io.to(`user:${userId}`).emit("session:stop", stopPayload);
+            return res.json({ session: { ...session, status: "stopped", final_amount_paise: finalAmountPaise, duration_sec: durationSec }, finalAmountPaise, durationSec, walletBalance });
+        } catch (err) { console.warn("[stop-session] DB error, using memStore:", err.message); }
     }
+
+    // ── In-memory stop session ────────────────────────────────────────────────
+    let session = null;
+    for (const [, s] of memStore.sessions) {
+        if (s.user_id === userId && s.merchant_id === merchantId && (s.status === "active" || s.status === "paused_low_balance")) {
+            session = s; break;
+        }
+    }
+    if (!session) return res.status(404).json({ error: "No active session" });
+
+    const finalAmountPaise = memStore.getLedgerTotal(session.id);
+    const durationSec = Math.floor((Date.now() - new Date(session.started_at).getTime()) / 1000);
+    session.status = "stopped";
+    session.ended_at = new Date().toISOString();
+    session.final_amount_paise = finalAmountPaise;
+
+    const walletBalance = memStore.getWallet(userId).balance_paise;
+    const stopPayload = { sessionId: session.id, durationSec, finalAmountPaise };
+    io.to(`merchant:${merchantId}`).emit("session:stop", stopPayload);
+    io.to(`user:${userId}`).emit("session:stop", stopPayload);
+
+    console.log(`[API] stop-session (memStore) → sessionId=${session.id}, finalAmountPaise=${finalAmountPaise}`);
+    res.json({ session: { ...session, duration_sec: durationSec }, finalAmountPaise, durationSec, walletBalance });
 });
 
-// POST /api/create-order  (for Razorpay session payment)
+// POST /api/create-order (Razorpay)
 app.post("/api/create-order", async (req, res) => {
     const { sessionId } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
-    try {
-        const sesRes = await db.query("SELECT * FROM sessions WHERE id=$1", [sessionId]);
-        if (sesRes.rowCount === 0) return res.status(404).json({ error: "Session not found" });
-        const session = sesRes.rows[0];
-        const amountPaise = Math.max(session.final_amount_paise || 100, 100);
-        const order = await createOrder(amountPaise, sessionId);
-        await db.query("UPDATE sessions SET razorpay_order_id=$1 WHERE id=$2", [order.id, sessionId]);
-        res.json({ order, amountPaise });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+
+    // Try DB path
+    if (dbOnline && razorpayModule) {
+        try {
+            const sesRes = await db.query("SELECT * FROM sessions WHERE id=$1", [sessionId]);
+            if (sesRes.rowCount > 0) {
+                const session = sesRes.rows[0];
+                const amountPaise = Math.max(session.final_amount_paise || 100, 100);
+                const order = await razorpayModule.createOrder(amountPaise, sessionId);
+                await db.query("UPDATE sessions SET razorpay_order_id=$1 WHERE id=$2", [order.id, sessionId]);
+                return res.json({ order, amountPaise });
+            }
+        } catch (err) { console.warn("[create-order] DB error:", err.message); }
+    }
+
+    // memStore path — try Razorpay with memStore session
+    const session = memStore.sessions.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    const amountPaise = Math.max(session.final_amount_paise || 100, 100);
+    if (razorpayModule) {
+        try {
+            const order = await razorpayModule.createOrder(amountPaise, sessionId);
+            return res.json({ order, amountPaise });
+        } catch (err) { console.warn("[create-order] Razorpay error:", err.message); }
+    }
+    res.status(503).json({ error: "Payment gateway unavailable. Use wallet payment." });
 });
 
 // GET /api/session/:id
 app.get("/api/session/:id", async (req, res) => {
-    try {
-        const s = await db.query(
-            "SELECT s.*, m.name AS merchant_name, m.service_type, m.price_per_minute_paise FROM sessions s JOIN merchants m ON m.id=s.merchant_id WHERE s.id=$1",
-            [req.params.id]
-        );
-        if (s.rowCount === 0) return res.status(404).json({ error: "Not found" });
-        const l = await db.query("SELECT * FROM ledger WHERE session_id=$1 ORDER BY ts DESC LIMIT 200", [req.params.id]);
-        res.json({ session: s.rows[0], ledger: l.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const s = await db.query(
+                "SELECT s.*, m.name AS merchant_name, m.service_type, m.price_per_minute_paise FROM sessions s JOIN merchants m ON m.id=s.merchant_id WHERE s.id=$1",
+                [req.params.id]
+            );
+            if (s.rowCount > 0) {
+                const l = await db.query("SELECT * FROM ledger WHERE session_id=$1 ORDER BY ts DESC LIMIT 200", [req.params.id]);
+                return res.json({ session: s.rows[0], ledger: l.rows });
+            }
+        } catch (err) { console.warn("[session/get] DB error:", err.message); }
+    }
+    const session = memStore.sessions.get(req.params.id);
+    if (!session) return res.status(404).json({ error: "Not found" });
+    const ledger = memStore.ledger.get(req.params.id) || [];
+    res.json({ session, ledger });
 });
 
 // GET /api/transactions/:userId
 app.get("/api/transactions/:userId", async (req, res) => {
     const { userId } = req.params;
-    try {
-        const sessions = await db.query(
-            "SELECT s.*, m.name AS merchant_name, m.service_type FROM sessions s JOIN merchants m ON m.id=s.merchant_id WHERE s.user_id=$1 ORDER BY s.started_at DESC LIMIT 50",
-            [userId]
-        );
-        const payments = await db.query(
-            "SELECT p.*, m.name AS merchant_name FROM payments p JOIN merchants m ON m.id=p.merchant_id WHERE p.user_id=$1 ORDER BY p.created_at DESC LIMIT 50",
-            [userId]
-        );
-        const ledger = await db.query(
-            "SELECT * FROM ledger WHERE user_id=$1 ORDER BY ts DESC LIMIT 100",
-            [userId]
-        );
-        res.json({ sessions: sessions.rows, payments: payments.rows, ledger: ledger.rows });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const sessions = await db.query(
+                "SELECT s.*, m.name AS merchant_name, m.service_type FROM sessions s JOIN merchants m ON m.id=s.merchant_id WHERE s.user_id=$1 ORDER BY s.started_at DESC LIMIT 50",
+                [userId]
+            );
+            const payments = await db.query(
+                "SELECT p.*, m.name AS merchant_name FROM payments p JOIN merchants m ON m.id=p.merchant_id WHERE p.user_id=$1 ORDER BY p.created_at DESC LIMIT 50",
+                [userId]
+            );
+            return res.json({ sessions: sessions.rows, payments: payments.rows, ledger: [] });
+        } catch (err) { console.warn("[transactions] DB error:", err.message); }
+    }
+    // memStore
+    const sessions = [...memStore.sessions.values()]
+        .filter(s => s.user_id === userId)
+        .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
+        .map(s => ({
+            ...s, id: s.id,
+            merchant_name: s.merchant_name || "Merchant",
+            service_type: s.service_type,
+        }));
+    const payments = [...memStore.payments.values()].filter(p => p.userId === userId);
+    res.json({ sessions, payments, ledger: [] });
 });
 
-// GET /api/invoice/:sessionId — structured invoice for download
+// GET /api/invoice/:sessionId
 app.get("/api/invoice/:sessionId", async (req, res) => {
-    try {
-        const s = await db.query(
-            "SELECT s.*, m.name AS merchant_name, m.service_type, m.location FROM sessions s JOIN merchants m ON m.id=s.merchant_id WHERE s.id=$1",
-            [req.params.sessionId]
-        );
-        if (s.rowCount === 0) return res.status(404).json({ error: "Not found" });
-        const session = s.rows[0];
-        const l = await db.query("SELECT * FROM ledger WHERE session_id=$1 ORDER BY ts", [req.params.sessionId]);
-        const p = await db.query("SELECT * FROM payments WHERE session_id=$1", [req.params.sessionId]);
-
-        const invoice = {
-            invoiceId: `INV-${req.params.sessionId.slice(0, 8).toUpperCase()}`,
-            generatedAt: new Date().toISOString(),
-            merchant: { name: session.merchant_name, serviceType: session.service_type, location: session.location },
-            session: {
-                id: session.id, startedAt: session.started_at, endedAt: session.ended_at,
-                durationSec: session.ended_at ? Math.round((new Date(session.ended_at) - new Date(session.started_at)) / 1000) : null,
-                finalAmountPaise: session.final_amount_paise,
-                finalAmountINR: (session.final_amount_paise / 100).toFixed(2),
-                status: session.status, paymentStatus: session.payment_status,
-            },
-            ledgerSummary: { totalTicks: l.rows.length, totalDebitedPaise: l.rows.reduce((s, r) => s + r.amount_paise, 0) },
-            payment: p.rows[0] || null,
-        };
-
-        res.setHeader("Content-Disposition", `attachment; filename="invoice_${invoice.invoiceId}.json"`);
-        res.json(invoice);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    if (dbOnline) {
+        try {
+            const s = await db.query(
+                "SELECT s.*, m.name AS merchant_name, m.service_type, m.location FROM sessions s JOIN merchants m ON m.id=s.merchant_id WHERE s.id=$1",
+                [req.params.sessionId]
+            );
+            if (s.rowCount > 0) {
+                const session = s.rows[0];
+                const l = await db.query("SELECT * FROM ledger WHERE session_id=$1 ORDER BY ts", [req.params.sessionId]);
+                const p = await db.query("SELECT * FROM payments WHERE session_id=$1", [req.params.sessionId]);
+                const invoice = {
+                    invoiceId: `INV-${req.params.sessionId.slice(0, 8).toUpperCase()}`,
+                    generatedAt: new Date().toISOString(),
+                    merchant: { name: session.merchant_name, serviceType: session.service_type, location: session.location },
+                    session: { id: session.id, startedAt: session.started_at, endedAt: session.ended_at, finalAmountPaise: session.final_amount_paise, finalAmountINR: (session.final_amount_paise / 100).toFixed(2), status: session.status, paymentStatus: session.payment_status },
+                    ledgerSummary: { totalTicks: l.rows.length, totalDebitedPaise: l.rows.reduce((s, r) => s + r.amount_paise, 0) },
+                    payment: p.rows[0] || null,
+                };
+                res.setHeader("Content-Disposition", `attachment; filename="invoice_${invoice.invoiceId}.json"`);
+                return res.json(invoice);
+            }
+        } catch (err) { console.warn("[invoice] DB error:", err.message); }
+    }
+    const session = memStore.sessions.get(req.params.sessionId);
+    if (!session) return res.status(404).json({ error: "Not found" });
+    const payment = memStore.payments.get(req.params.sessionId);
+    const merchant = memStore.merchants.get(session.merchant_id) || {};
+    const invoice = {
+        invoiceId: `INV-${req.params.sessionId.slice(0, 8).toUpperCase()}`,
+        generatedAt: new Date().toISOString(),
+        merchant: { name: merchant.name || session.merchant_name, serviceType: session.service_type, location: merchant.location || "—" },
+        session: { id: session.id, startedAt: session.started_at, endedAt: session.ended_at, finalAmountPaise: session.final_amount_paise, finalAmountINR: ((session.final_amount_paise || 0) / 100).toFixed(2), status: session.status, paymentStatus: session.payment_status },
+        ledgerSummary: { totalTicks: (memStore.ledger.get(req.params.sessionId) || []).length, totalDebitedPaise: memStore.getLedgerTotal(req.params.sessionId) },
+        payment: payment || null,
+    };
+    res.setHeader("Content-Disposition", `attachment; filename="invoice_${invoice.invoiceId}.json"`);
+    res.json(invoice);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// WEBHOOK — handles both session payments AND wallet topups
+// WEBHOOK
 // ═════════════════════════════════════════════════════════════════════════════
 app.post("/api/webhook/razorpay", async (req, res) => {
+    if (!razorpayModule) return res.status(503).json({ error: "Razorpay not configured" });
     const signature = req.headers["x-razorpay-signature"];
     if (!signature) return res.status(400).json({ error: "Missing signature" });
-
     const rawBody = req.body;
-    if (!verifyWebhookSignature(rawBody, signature)) {
-        console.warn("[Webhook] Invalid signature");
+    if (!razorpayModule.verifyWebhookSignature(rawBody, signature)) {
         return res.status(400).json({ error: "Invalid signature" });
     }
-
     let event;
     try { event = JSON.parse(rawBody.toString("utf8")); } catch { return res.status(400).json({ error: "Bad JSON" }); }
-    console.log(`[Webhook] ${event.event}`);
 
     if (event.event === "payment.captured") {
         const payment = event.payload.payment.entity;
         const { order_id: orderId, id: paymentId, amount: amountPaise } = payment;
-
-        try {
-            // Idempotency check
-            const dup = await db.query("SELECT id FROM payments WHERE payment_id=$1", [paymentId]);
-            if (dup.rowCount > 0) return res.json({ ok: true });
-
-            // ── Check if this is a WALLET TOPUP ───────────────────────────────────
-            const txRes = await db.query(
-                "SELECT * FROM wallet_transactions WHERE razorpay_order_id=$1 AND type='topup'",
-                [orderId]
-            );
-
-            if (txRes.rowCount > 0) {
-                const tx = txRes.rows[0];
-                // Credit wallet
-                await db.query(
-                    "UPDATE wallets SET balance_paise = balance_paise + $1 WHERE wallet_id=$2 RETURNING *",
-                    [amountPaise, tx.wallet_id]
-                );
-                await db.query(
-                    "UPDATE wallet_transactions SET status='completed', payment_id=$1 WHERE id=$2",
-                    [paymentId, tx.id]
-                );
-                // Record in payments table for audit
-                await db.query(
-                    `INSERT INTO payments (id,user_id,merchant_id,session_id,order_id,payment_id,amount_paise,status,method,raw_payload)
-           VALUES ($1,$2,NULL,NULL,$3,$4,$5,'paid','topup',$6)`,
-                    [uuidv4(), tx.user_id, orderId, paymentId, amountPaise, JSON.stringify(event)]
-                );
-                // Get new balance
-                const walletRes = await db.query("SELECT balance_paise FROM wallets WHERE wallet_id=$1", [tx.wallet_id]);
-                io.to(`user:${tx.user_id}`).emit("wallet:update", {
-                    balancePaise: walletRes.rows[0]?.balance_paise,
-                    event: "topup", amountPaise,
-                });
-                console.log(`[Webhook] Wallet topped up: ${tx.wallet_id} +₹${amountPaise / 100}`);
-                return res.json({ ok: true });
-            }
-
-            // ── SESSION PAYMENT ───────────────────────────────────────────────────
-            const sesRes = await db.query("SELECT * FROM sessions WHERE razorpay_order_id=$1", [orderId]);
-            if (sesRes.rowCount === 0) { console.warn(`[Webhook] No session for order ${orderId}`); return res.json({ ok: true }); }
-            const session = sesRes.rows[0];
-
-            await db.query(
-                `INSERT INTO payments (id,user_id,merchant_id,session_id,order_id,payment_id,amount_paise,status,method,raw_payload)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'paid','razorpay',$8)`,
-                [uuidv4(), session.user_id, session.merchant_id, session.id, orderId, paymentId, amountPaise, JSON.stringify(event)]
-            );
-            await db.query("UPDATE sessions SET payment_status='paid' WHERE id=$1", [session.id]);
-            await db.query(
-                "INSERT INTO merchant_payable (merchant_id,session_id,amount_paise,payment_id,credited_at) VALUES ($1,$2,$3,$4,NOW()) ON CONFLICT (payment_id) DO NOTHING",
-                [session.merchant_id, session.id, amountPaise, paymentId]
-            );
-
-            const successPayload = { sessionId: session.id, paymentId, amountPaise, method: "razorpay" };
-            io.to(`merchant:${session.merchant_id}`).emit("payment:success", successPayload);
-            io.to(`user:${session.user_id}`).emit("payment:success", successPayload);
-
-            console.log(`[Webhook] Session payment: ${paymentId} ₹${amountPaise / 100}`);
-        } catch (err) {
-            console.error("[Webhook] Error:", err.message);
-            return res.status(500).json({ error: err.message });
+        if (dbOnline) {
+            try {
+                const dup = await db.query("SELECT id FROM payments WHERE payment_id=$1", [paymentId]);
+                if (dup.rowCount > 0) return res.json({ ok: true });
+                const sesRes = await db.query("SELECT * FROM sessions WHERE razorpay_order_id=$1", [orderId]);
+                if (sesRes.rowCount > 0) {
+                    const session = sesRes.rows[0];
+                    await db.query(`INSERT INTO payments (id,user_id,merchant_id,session_id,order_id,payment_id,amount_paise,status,method,raw_payload) VALUES ($1,$2,$3,$4,$5,$6,$7,'paid','razorpay',$8)`,
+                        [uuidv4(), session.user_id, session.merchant_id, session.id, orderId, paymentId, amountPaise, JSON.stringify(event)]);
+                    await db.query("UPDATE sessions SET payment_status='paid' WHERE id=$1", [session.id]);
+                    const successPayload = { sessionId: session.id, paymentId, amountPaise, method: "razorpay" };
+                    io.to(`merchant:${session.merchant_id}`).emit("payment:success", successPayload);
+                    io.to(`user:${session.user_id}`).emit("payment:success", successPayload);
+                }
+            } catch (err) { console.error("[Webhook] Error:", err.message); }
         }
     }
-
     res.json({ ok: true });
 });
 
