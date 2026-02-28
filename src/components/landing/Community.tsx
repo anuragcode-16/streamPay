@@ -2,12 +2,12 @@ const data = [
     {
         title: "01/",
         description:
-            "Liquifying Time and Money: Transforming static, lumpy payments into a continuous flow. Like water flowing through a pipe when you turn on the tap, money flows continuously exact second by second.",
+            "Liquifying Time and Money: Transforming static, lumpy payments into a continuous flow. Like water flowing through a pipe when you turn on the tap, money flows continuously exact second by second from an atomic wallet buffer.",
     },
     {
         title: "02/",
         description:
-            "The Magic Moment: Walk in, scan QR, and see a 'Live Pulse' on your phone. Money streams automatically. Walk out, press stop, and pay for not a minute more. No manual transactions.",
+            "The Magic Moment: Walk in, scan QR, and see a 'Live Pulse' on your phone. Money streams automatically against a prepaid wallet balance. Walk out, press stop, and pay for not a minute more.",
     },
     {
         title: "03/",

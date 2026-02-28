@@ -31,19 +31,19 @@ export default function HeroSection() {
             Introduction: Understanding the Concept
           </h1>
           <p className="max-w-lg text-gray-400 text-lg leading-relaxed">
-            Imagine walking into a gym, scanning a QR code, working out for exactly 30 minutes, and paying only for those 30 minutes. This is the core idea behind StreamPay, a revolutionary payment system that transforms how we pay for utilities and services in our daily lives.
+            Imagine walking into a gym, scanning a QR code, working out for exactly 30 minutes, and paying only for those 30 minutes. This is the core idea behind Stream Pay, a revolutionary per-second wallet buffer system bridging physical services and real-time payments.
           </p>
           <div className="flex items-center flex-wrap gap-6 mt-10">
             <button className="flex flex-col justify-start text-lg font-bold rounded text-white hover:text-theme-pink transition-colors">
               <span className="text-sm text-gray-500 uppercase tracking-widest mb-1">Powered By</span>
-              <span className="text-2xl">Superfluid</span>
+              <span className="text-2xl">Razorpay & Node.js</span>
             </button>
 
             <button
-              onClick={() => navigate("/auth")}
+              onClick={() => navigate("/customer")}
               className="px-8 py-4 border border-theme-pink/30 flex items-center sm:text-lg font-bold rounded-full glass hover:bg-theme-pink/10 hover:border-theme-pink text-white transition-all duration-300 group"
             >
-              Discover More <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform" />
+              Open App <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform" />
             </button>
           </div>
         </div>

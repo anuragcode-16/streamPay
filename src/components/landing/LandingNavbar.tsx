@@ -55,7 +55,7 @@ export default function LandingNavbar() {
                             <div className="pt-5 pb-6 px-5">
                                 <div className="flex items-center justify-between mb-4">
                                     <div>
-                                        <h1 className="text-2xl font-bold text-theme-pink">StreamPay</h1>
+                                        <h1 className="text-2xl font-bold text-theme-pink">Stream Pay</h1>
                                     </div>
                                     <div className="-mr-2">
                                         <button

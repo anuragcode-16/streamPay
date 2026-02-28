@@ -20,20 +20,20 @@ export default function AboutSection() {
                     </p>
                     <h2 className="text-2xl font-bold text-white mb-4">The Forced Subscription Model</h2>
                     <p className="text-lg text-gray-400 leading-relaxed">
-                        Because traditional payment systems cannot support pay-as-you-use models, service providers have been forced into offer fixed-cost subscriptions. This creates "subscription fatigue" for consumers who pay for underutilized services, and high customer acquisition costs for business owners who face churn from dissatisfied customers.
+                        Because traditional payment systems cannot support pay-as-you-use models, service providers have been forced to offer fixed-cost subscriptions. This creates "subscription fatigue" for consumers who pay for underutilized services, and high customer acquisition costs for business owners who face churn from dissatisfied customers.
                     </p>
                 </div>
 
                 <div className="relative flex justify-center order-1 lg:order-1">
-                    {/* StreamPay Graphic */}
+                    {/* Stream Pay Graphic */}
                     <div className="relative w-full max-w-[500px] aspect-square">
                         <div className="absolute inset-0 bg-gradient-to-tr from-theme-pink/20 to-purple-900/40 rounded-full blur-3xl animate-pulse"></div>
                         <img
                             src="/about_graphic.png"
                             className="relative z-10 w-full h-full object-contain drop-shadow-[0_0_50px_rgba(255,182,193,0.3)] hover:scale-105 transition-transform duration-500"
-                            alt="StreamPay Flow"
+                            alt="Stream Pay Flow"
                             onError={(e) => {
-                                (e.target as HTMLImageElement).src = "https://placehold.co/600x600/121212/FFB6C1/png?text=StreamPay+Flow";
+                                (e.target as HTMLImageElement).src = "https://placehold.co/600x600/121212/FFB6C1/png?text=Stream+Pay+Flow";
                             }}
                         />
                     </div>

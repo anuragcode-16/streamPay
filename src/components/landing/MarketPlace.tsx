@@ -38,7 +38,7 @@ export default function MarketPlace() {
                             What we have is a clear market gap. On one side, consumers want to pay only for what they use. On the other, providers want to retain customers.
                         </p>
                         <p className="text-gray-400 text-lg">
-                            In the middle, we have a payment infrastructure that forces everyone into a model that serves neither well. StreamPay bridges this gap by enabling granular, usage-based pricing that aligns incentives for everyone.
+                            In the middle, we have a payment infrastructure that forces everyone into a model that serves neither well. Stream Pay bridges this gap by enabling granular, usage-based pricing that aligns incentives for everyone.
                         </p>
 
                         <button className="px-8 py-4 border border-theme-pink/30 flex items-center sm:text-lg font-bold rounded-full glass hover:bg-theme-pink/10 hover:border-theme-pink text-white transition-all duration-300 group">
