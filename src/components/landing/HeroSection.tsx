@@ -40,7 +40,7 @@ export default function HeroSection() {
             </button>
 
             <button
-              onClick={() => navigate("/customer")}
+              onClick={() => navigate("/auth")}
               className="px-8 py-4 border border-theme-pink/30 flex items-center sm:text-lg font-bold rounded-full glass hover:bg-theme-pink/10 hover:border-theme-pink text-white transition-all duration-300 group"
             >
               Open App <ArrowRight className="ml-2 group-hover:translate-x-1 transition-transform" />

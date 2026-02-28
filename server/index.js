@@ -463,7 +463,7 @@ app.post("/api/create-merchant", async (req, res) => {
             return res.json({ merchant: result.rows[0], qr: { start: startQR, stop: stopQR } });
         } catch (err) { console.warn("[create-merchant] DB error:", err.message); }
     }
-    const merchant = { id: merchantId, name, service_type: serviceType, price_per_minute_paise: pricePerMinutePaise, location: location || "", lat: lat || null, lng: lng || null };
+    const merchant = { id: merchantId, name, service_type: serviceType, price_per_minute_paise: pricePerMinutePaise, location: location || "", lat: lat || null, lng: lng || null, user_id: userId || null };
     memStore.merchants.set(merchantId, merchant);
     const startQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "start" })).toString("base64");
     const stopQR = Buffer.from(JSON.stringify({ merchantId, serviceType, action: "stop" })).toString("base64");
@@ -480,6 +480,21 @@ app.get("/api/merchant/:id", async (req, res) => {
     const m = memStore.merchants.get(req.params.id);
     if (!m) return res.status(404).json({ error: "Not found" });
     res.json(m);
+});
+
+// GET /api/merchant/by-user/:userId — lookup merchant linked to a user account
+app.get("/api/merchant/by-user/:userId", async (req, res) => {
+    const { userId } = req.params;
+    if (dbOnline) {
+        try {
+            const r = await db.query("SELECT * FROM merchants WHERE user_id = $1 LIMIT 1", [userId]);
+            if (r.rowCount > 0) return res.json({ merchant: r.rows[0] });
+            return res.json({ merchant: null });
+        } catch (err) { console.warn("[merchant/by-user] DB error:", err.message); }
+    }
+    // memStore lookup
+    const found = [...memStore.merchants.values()].find(m => m.user_id === userId);
+    res.json({ merchant: found || null });
 });
 
 app.post("/api/merchant/service", async (req, res) => {
@@ -885,6 +900,30 @@ app.get("/api/transactions/:userId", async (req, res) => {
         }));
     const payments = [...memStore.payments.values()].filter(p => p.userId === userId);
     res.json({ sessions, payments, ledger: [] });
+});
+
+// GET /api/payments/:merchantId — real payment history for merchant dashboard
+app.get("/api/payments/:merchantId", async (req, res) => {
+    const { merchantId } = req.params;
+    if (dbOnline) {
+        try {
+            const result = await db.query(
+                `SELECT p.*, m.name AS merchant_name, m.service_type, s.started_at, s.ended_at, s.price_per_minute_paise
+                 FROM payments p
+                 JOIN merchants m ON m.id = p.merchant_id
+                 JOIN sessions s ON s.id = p.session_id
+                 WHERE p.merchant_id = $1
+                 ORDER BY p.created_at DESC LIMIT 200`,
+                [merchantId]
+            );
+            return res.json({ payments: result.rows });
+        } catch (err) { console.warn("[payments/merchant] DB error:", err.message); }
+    }
+    // memStore — collect payments for this merchant
+    const allPayments = [...memStore.payments.values()]
+        .filter(p => p.merchantId === merchantId)
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json({ payments: allPayments });
 });
 
 // GET /api/invoice/:sessionId

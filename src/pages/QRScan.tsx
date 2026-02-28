@@ -21,23 +21,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 const DEMO_MERCHANT_ID = "m_demo_gym001";
 const DEMO_SERVICE_TYPE = "gym";
 
-declare global {
-    interface Window {
-        Razorpay: any;
-    }
-}
-
-/** Load Razorpay Checkout.js script once */
-function loadRazorpay(): Promise<boolean> {
-    return new Promise((resolve) => {
-        if (window.Razorpay) return resolve(true);
-        const script = document.createElement("script");
-        script.src = "https://checkout.razorpay.com/v1/checkout.js";
-        script.onload = () => resolve(true);
-        script.onerror = () => resolve(false);
-        document.body.appendChild(script);
-    });
-}
+// (Razorpay removed — payments handled via /api/pay-wallet)
 
 export default function QRScan() {
     const { user } = useAuth();

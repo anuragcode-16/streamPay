@@ -3,7 +3,7 @@
  *
  * - Fetches wallet + transactions from GET /api/wallet/:userId and
  *   GET /api/wallet/transactions/:userId on mount and after every top-up.
- * - Top-up via Razorpay Checkout (test mode) — optimistic credit + re-fetch.
+ * - Instant demo top-up — credits via /api/wallet/topup immediately.
  * - UPI ID simulated collect flow — credits via /api/wallet/topup after delay.
  * - Accepts an optional onBalanceChange callback so CustomerDashboard sidebar
  *   stays in sync whenever the balance changes here.
@@ -18,20 +18,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
-const RZP_KEY = import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_SLAzRB6IuBdDcI";
-
-declare global { interface Window { Razorpay: any; } }
-
-function loadRazorpay(): Promise<boolean> {
-    return new Promise(resolve => {
-        if (window.Razorpay) return resolve(true);
-        const s = document.createElement("script");
-        s.src = "https://checkout.razorpay.com/v1/checkout.js";
-        s.onload = () => resolve(true);
-        s.onerror = () => resolve(false);
-        document.body.appendChild(s);
-    });
-}
 
 function formatPaise(paise: number) {
     return `₹${(paise / 100).toFixed(2)}`;
@@ -68,7 +54,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
     const [showTopup, setShowTopup] = useState(false);
     const [topupAmount, setTopupAmount] = useState("100");
     const [topupLoading, setTopupLoading] = useState(false);
-    const [topupTab, setTopupTab] = useState<"razorpay" | "upi">("razorpay");
+    const [topupTab, setTopupTab] = useState<"instant" | "upi">("instant");
     const [upiId, setUpiId] = useState("");
     const [upiPending, setUpiPending] = useState(false);
     const [upiSuccess, setUpiSuccess] = useState(false);
@@ -127,53 +113,28 @@ export default function WalletPage({ onBalanceChange }: Props) {
         }
     }
 
-    async function handleRazorpayTopup() {
+    async function handleInstantTopup() {
         const amountPaise = Math.round(parseFloat(topupAmount) * 100);
         if (isNaN(amountPaise) || amountPaise < 100) {
             toast({ title: "Minimum top-up is ₹1", variant: "destructive" }); return;
         }
         setTopupLoading(true);
         try {
-            const loaded = await loadRazorpay();
-            if (!loaded) throw new Error("Razorpay failed to load");
-
-            // Create backend order for top-up
-            const orderRes = await fetch(`${API_URL}/api/wallet/topup`, {
+            const res = await fetch(`${API_URL}/api/wallet/topup`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ userId, amountINR: topupAmount }),
             });
-            const orderData = await orderRes.json();
-            if (!orderRes.ok) throw new Error(orderData.error || "Order creation failed");
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || "Topup failed");
 
-            await new Promise<void>(resolve => {
-                const rzp = new window.Razorpay({
-                    key: RZP_KEY,
-                    order_id: orderData.order?.id,
-                    amount: amountPaise,
-                    currency: "INR",
-                    name: "Stream Pay Wallet",
-                    description: `Wallet Top-up ₹${topupAmount}`,
-                    theme: { color: "#6366f1" },
-                    handler: async (_response: any) => {
-                        // Re-fetch from API (webhook will have credited by now)
-                        await loadWallet();
-                        toast({
-                            title: `✅ ₹${topupAmount} added!`,
-                            description: `Balance updated.`,
-                        });
-                        setShowTopup(false);
-                        resolve();
-                    },
-                    modal: {
-                        ondismiss: () => {
-                            toast({ title: "Topup cancelled", variant: "destructive" });
-                            resolve();
-                        },
-                    },
-                });
-                rzp.open();
+            // Re-fetch wallet to get updated balance
+            await loadWallet();
+            toast({
+                title: `✅ ₹${topupAmount} added!`,
+                description: `Balance updated.`,
             });
+            setShowTopup(false);
         } catch (err: any) {
             toast({ title: "Error", description: err.message, variant: "destructive" });
         } finally {
@@ -195,7 +156,6 @@ export default function WalletPage({ onBalanceChange }: Props) {
         setUpiPending(true);
         setUpiSuccess(false);
         try {
-            // Create a topup order on backend, simulate UPI collect approval delay
             const orderRes = await fetch(`${API_URL}/api/wallet/topup`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -207,24 +167,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
             // Simulate the UPI collect approval delay (4 seconds)
             await new Promise(res => setTimeout(res, 4000));
 
-            // Manually credit the wallet (simulating webhook credit for UPI collect)
-            // In DB-offline mode, /api/wallet/topup already credits the wallet and does not return an order.
-            if (orderData.order?.id) {
-                const creditRes = await fetch(`${API_URL}/api/wallet/credit`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ userId, amountPaise, orderId: orderData.order.id }),
-                });
-
-                if (!creditRes.ok) {
-                    // Fallback: just re-fetch (webhook may have already credited)
-                    await loadWallet();
-                } else {
-                    await loadWallet();
-                }
-            } else {
-                await loadWallet();
-            }
+            await loadWallet();
 
             setUpiSuccess(true);
             toast({
@@ -335,10 +278,10 @@ export default function WalletPage({ onBalanceChange }: Props) {
                             {/* Payment Method Tabs */}
                             <div className="mb-4 flex rounded-xl border border-border overflow-hidden">
                                 <button
-                                    onClick={() => setTopupTab("razorpay")}
-                                    className={`flex flex-1 items-center justify-center gap-2 py-2.5 text-xs font-bold transition ${topupTab === "razorpay" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
+                                    onClick={() => setTopupTab("instant")}
+                                    className={`flex flex-1 items-center justify-center gap-2 py-2.5 text-xs font-bold transition ${topupTab === "instant" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
                                 >
-                                    <CreditCard className="h-3.5 w-3.5" /> Card / Netbanking
+                                    <CreditCard className="h-3.5 w-3.5" /> Instant Top-up
                                 </button>
                                 <button
                                     onClick={() => { setTopupTab("upi"); setUpiPending(false); setUpiSuccess(false); }}
@@ -348,18 +291,18 @@ export default function WalletPage({ onBalanceChange }: Props) {
                                 </button>
                             </div>
 
-                            {/* Razorpay Tab */}
-                            {topupTab === "razorpay" && (
+                            {/* Instant Top-up Tab */}
+                            {topupTab === "instant" && (
                                 <>
                                     <button
-                                        onClick={handleRazorpayTopup} disabled={topupLoading}
+                                        onClick={handleInstantTopup} disabled={topupLoading}
                                         className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50"
                                     >
                                         {topupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
-                                        Pay ₹{topupAmount} via Razorpay
+                                        Add ₹{topupAmount} to Wallet
                                     </button>
                                     <p className="mt-3 text-center text-xs text-muted-foreground">
-                                        Test Mode · Card: <code className="rounded bg-muted px-1">4111 1111 1111 1111</code> · CVV: any
+                                        Instantly credits your StreamPay wallet
                                     </p>
                                 </>
                             )}

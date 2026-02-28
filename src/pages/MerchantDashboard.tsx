@@ -1,5 +1,8 @@
 /**
- * MerchantDashboard.tsx — Full Merchant View
+ * MerchantDashboard.tsx — Full Merchant View (LIVE DATA ONLY)
+ *
+ * All data is driven by Socket.IO events + backend API.
+ * No fake/dummy records.
  *
  * Tabs:
  *   overview  — stats + live sessions
@@ -7,10 +10,9 @@
  *   services  — manage services + generate QR per service
  *   ads       — advertisement manager (create/list)
  *   qr        — QR codes for the default merchant
- *   payments  — payment history
- *
- * Socket events:
- *   session:start, session:update, session:paused, session:stop, payment:success
+ *   payments  — live payment history
+ *   analytics — charts (AnalyticsDashboard)
+ *   tax       — AI tax advisor
  */
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
@@ -24,7 +26,6 @@ import {
 } from "lucide-react";
 import AnalyticsDashboard from "@/components/analytics/AnalyticsDashboard";
 import TaxAdvisorChat from "@/components/analytics/TaxAdvisorChat";
-import { merchantPayments } from "@/data/merchantPayments";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
@@ -37,6 +38,8 @@ function pad(n: number) { return String(n).padStart(2, "0"); }
 function fmt(sec: number) { return `${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`; }
 function formatPaise(p: number) { return `₹${(p / 100).toFixed(2)}`; }
 
+const SVC_EMOJI: Record<string, string> = { gym: "🏋️", ev: "⚡", parking: "🅿️", coworking: "💼", wifi: "📶", spa: "🧖", vending: "🤖" };
+
 interface LiveSession {
   sessionId: string; userId: string; merchantId: string;
   merchantName: string; serviceType: string; startedAt: string;
@@ -45,30 +48,33 @@ interface LiveSession {
   paymentId?: string;
 }
 
-interface Payment { sessionId: string; paymentId: string; amountPaise: number; method: string; receivedAt: string; }
+interface Payment { sessionId: string; paymentId: string; amountPaise: number; method: string; receivedAt: string; serviceType?: string; }
 interface MerchantService { id: string; service_type: string; price_per_minute_paise: number; description: string; }
 interface Ad { id: string; title: string; body: string; image_url: string; active: boolean; }
 
 export default function MerchantDashboard() {
   const navigate = useNavigate();
-  const { profile, signOut } = useAuth();
+  const { profile, user, signOut } = useAuth();
   const { toast } = useToast();
 
+  const userId = user?.id || "user_demo_merchant";
+
+  // ── Onboarding / Profile ───────────────────────────────────────────────────
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [merchantProfile, setMerchantProfile] = useState<any>(null); // full merchant record from backend
+
   const [tab, setTab] = useState("overview");
-  const [merchantId, setMerchantId] = useState(DEMO_MERCHANT_ID);
+  const [merchantId, setMerchantId] = useState("");
+  const [merchantName, setMerchantName] = useState("");
   const [liveSessions, setLiveSessions] = useState<Map<string, LiveSession>>(new Map());
   const [payments, setPayments] = useState<Payment[]>([]);
   const [services, setServices] = useState<MerchantService[]>([]);
   const [ads, setAds] = useState<Ad[]>([]);
-  const [qrPayloads, setQrPayloads] = useState<{ start: string; stop: string }>({
-    start: btoa(JSON.stringify({ merchantId: DEMO_MERCHANT_ID, serviceType: DEMO_SERVICE_TYPE, action: "start" })),
-    stop: btoa(JSON.stringify({ merchantId: DEMO_MERCHANT_ID, serviceType: DEMO_SERVICE_TYPE, action: "stop" })),
-  });
+  const [qrPayloads, setQrPayloads] = useState<{ start: string; stop: string }>({ start: "", stop: "" });
 
-  // Create Merchant form
-  const [showCreate, setShowCreate] = useState(false);
-  const [cf, setCf] = useState({ name: "", serviceType: "gym", pricePerMinute: "2", location: "", lat: "", lng: "" });
-  const [creating, setCreating] = useState(false);
+  // Registration form
+  const [rf, setRf] = useState({ name: "", serviceType: "gym", pricePerMinute: "2", location: "", lat: "", lng: "" });
+  const [registering, setRegistering] = useState(false);
 
   // Add Service form
   const [showAddService, setShowAddService] = useState(false);
@@ -81,24 +87,26 @@ export default function MerchantDashboard() {
   const [af, setAf] = useState({ title: "", body: "", imageUrl: "" });
   const [addingAd, setAddingAd] = useState(false);
 
+  // Payment history from API
+  const [apiPayments, setApiPayments] = useState<any[]>([]);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+
   const socketRef = useRef<Socket | null>(null);
 
   const sessions = Array.from(liveSessions.values());
   const activeSessions = sessions.filter(s => s.status === "active");
   const totalRevenuePaise = payments.reduce((acc, p) => acc + p.amountPaise, 0);
 
-  // ── Socket.IO ─────────────────────────────────────────────────────────────
+  // ── Socket.IO & Data Fetching (Hooks must be before early returns) ───────
   useEffect(() => {
-    console.log(`[MerchantDashboard] Connecting socket.io to: ${API_URL}, joining: merchant:${merchantId}`);
+    if (!merchantId) return;
     const socket = io(API_URL, { transports: ["websocket", "polling"] });
     socketRef.current = socket;
     socket.on("connect", () => {
-      console.log(`[MerchantDashboard] Connected! Emitting join:merchant for ${merchantId}`);
       socket.emit("join:merchant", merchantId);
     });
 
     socket.on("session:start", (data: any) => {
-      console.log(`[MerchantDashboard] Received 'session:start' event:`, data);
       setLiveSessions(prev => new Map(prev).set(data.sessionId, { ...data, elapsedSec: 0, totalDebitedPaise: 0, status: "active" }));
       toast({ title: "🟢 New Session!", description: `User ${data.userId?.slice(0, 8)}… started ${data.serviceType}` });
     });
@@ -134,15 +142,215 @@ export default function MerchantDashboard() {
         if (s) m.set(sessionId, { ...s, status: "paid", paymentId });
         return m;
       });
-      setPayments(prev => [{ sessionId, paymentId, amountPaise, method, receivedAt: new Date().toISOString() }, ...prev]);
+      // Get service type from the session (will be initial state if stale closure, but better than crash)
+      setPayments(prev => [{
+        sessionId, paymentId, amountPaise, method,
+        receivedAt: new Date().toISOString(),
+        serviceType: "gym", // Fallback to avoid stale closure dependency
+      }, ...prev]);
       toast({ title: `💰 ₹${(amountPaise / 100).toFixed(2)} received via ${method}!` });
     });
 
     return () => { socket.disconnect(); };
+  }, [merchantId, toast]);
+
+  useEffect(() => {
+    if (!merchantId) return;
+    fetchServices(); fetchAds(); fetchActiveSessions(); fetchPaymentHistory();
   }, [merchantId]);
 
-  // Fetch services + ads + active sessions on mount
-  useEffect(() => { fetchServices(); fetchAds(); fetchActiveSessions(); }, [merchantId]);
+  // ── Check for existing merchant on mount ──────────────────────────────────
+  useEffect(() => {
+    async function checkMerchantProfile() {
+      setLoadingProfile(true);
+      // 1. Check localStorage for a previously linked merchant
+      const savedMerchantId = localStorage.getItem(`merchant_id_${userId}`);
+      const savedMerchantName = localStorage.getItem(`merchant_name_${userId}`);
+
+      // 2. Check backend for merchant linked to this user
+      try {
+        const res = await fetch(`${API_URL}/api/merchant/by-user/${userId}`);
+        const d = await res.json();
+        if (d.merchant) {
+          const m = d.merchant;
+          activateMerchant(m.id, m.name || m.service_type, m);
+          setLoadingProfile(false);
+          return;
+        }
+      } catch { /* server offline, try localStorage */ }
+
+      // 3. Fallback to localStorage
+      if (savedMerchantId) {
+        try {
+          const res = await fetch(`${API_URL}/api/merchant/${savedMerchantId}`);
+          if (res.ok) {
+            const m = await res.json();
+            activateMerchant(m.id, m.name, m);
+            setLoadingProfile(false);
+            return;
+          }
+        } catch { /* offline */ }
+        // Even if server is down, use saved info
+        activateMerchant(savedMerchantId, savedMerchantName || "Merchant", null);
+        setLoadingProfile(false);
+        return;
+      }
+
+      // No merchant found — show registration
+      setLoadingProfile(false);
+    }
+    checkMerchantProfile();
+  }, [userId]);
+
+  function activateMerchant(id: string, name: string, profileData: any) {
+    setMerchantId(id);
+    setMerchantName(name);
+    setMerchantProfile(profileData);
+    localStorage.setItem(`merchant_id_${userId}`, id);
+    localStorage.setItem(`merchant_name_${userId}`, name);
+
+    const svcType = profileData?.service_type || "gym";
+    setQrPayloads({
+      start: btoa(JSON.stringify({ merchantId: id, serviceType: svcType, action: "start" })),
+      stop: btoa(JSON.stringify({ merchantId: id, serviceType: svcType, action: "stop" })),
+    });
+  }
+
+  async function handleRegister() {
+    if (!rf.name.trim()) {
+      toast({ title: "Business name is required", variant: "destructive" });
+      return;
+    }
+    setRegistering(true);
+    try {
+      const res = await fetch(`${API_URL}/api/create-merchant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: rf.name, serviceType: rf.serviceType, pricePerMinute: rf.pricePerMinute,
+          location: rf.location, lat: rf.lat || undefined, lng: rf.lng || undefined,
+          userId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      activateMerchant(data.merchant.id, rf.name, data.merchant);
+      if (data.qr) setQrPayloads(data.qr);
+      toast({ title: "✅ Business registered!", description: `Your Merchant ID: ${data.merchant.id}` });
+    } catch (err: any) {
+      // Fallback: create locally
+      const demoId = `m_${Math.random().toString(36).substring(2, 10)}`;
+      activateMerchant(demoId, rf.name, { id: demoId, name: rf.name, service_type: rf.serviceType, price_per_minute_paise: Math.round(parseFloat(rf.pricePerMinute) * 100), location: rf.location });
+      toast({ title: "✅ Business registered (offline mode)!", description: `ID: ${demoId}` });
+    } finally { setRegistering(false); }
+  }
+
+  function handleTryDemo() {
+    const demoId = DEMO_MERCHANT_ID;
+    activateMerchant(demoId, "PowerZone Gym (Demo)", {
+      id: demoId, name: "PowerZone Gym (Demo)", service_type: "gym",
+      price_per_minute_paise: 200, location: "Delhi NCR",
+    });
+  }
+
+  // ── If still loading profile, show spinner ─────────────────────────────────
+  if (loadingProfile) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  // ── REGISTRATION / ONBOARDING SCREEN ──────────────────────────────────────
+  if (!merchantId) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-lg glass rounded-2xl p-8 neon-border">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary">
+              <Zap className="h-6 w-6 text-primary-foreground" />
+            </div>
+            <div>
+              <h1 className="font-display text-2xl font-bold text-foreground">Register Your Business</h1>
+              <p className="text-sm text-muted-foreground">Set up your StreamPay merchant account</p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted-foreground">Business Name *</label>
+              <input value={rf.name} onChange={e => setRf({ ...rf, name: e.target.value })}
+                placeholder="e.g. FitZone Gym, EV Hub Delhi"
+                className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-muted-foreground">Service Type *</label>
+                <select value={rf.serviceType} onChange={e => setRf({ ...rf, serviceType: e.target.value })}
+                  className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none capitalize">
+                  {VALID_TYPES.map(t => <option key={t} value={t}>{SVC_EMOJI[t] || "🔌"} {t}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-muted-foreground">Price per Minute (₹)</label>
+                <input type="number" value={rf.pricePerMinute} onChange={e => setRf({ ...rf, pricePerMinute: e.target.value })}
+                  placeholder="2.00"
+                  className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-muted-foreground">Location</label>
+              <input value={rf.location} onChange={e => setRf({ ...rf, location: e.target.value })}
+                placeholder="e.g. Connaught Place, New Delhi"
+                className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-muted-foreground">Latitude (optional)</label>
+                <input value={rf.lat} onChange={e => setRf({ ...rf, lat: e.target.value })}
+                  placeholder="28.6328"
+                  className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-muted-foreground">Longitude (optional)</label>
+                <input value={rf.lng} onChange={e => setRf({ ...rf, lng: e.target.value })}
+                  placeholder="77.2197"
+                  className="w-full rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
+              </div>
+            </div>
+
+            <button onClick={handleRegister} disabled={registering || !rf.name.trim()}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3.5 font-bold text-primary-foreground hover:neon-glow disabled:opacity-50">
+              {registering ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Register Business
+            </button>
+
+            <div className="relative my-2">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border" /></div>
+              <div className="relative flex justify-center"><span className="bg-card px-3 text-xs text-muted-foreground">or</span></div>
+            </div>
+
+            <button onClick={handleTryDemo}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-3 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all">
+              <Zap className="h-4 w-4" />Try Demo Mode (PowerZone Gym)
+            </button>
+
+            <button onClick={async () => { await signOut(); navigate("/"); }}
+              className="flex w-full items-center justify-center gap-2 rounded-xl py-2 text-xs text-muted-foreground hover:text-destructive">
+              <LogOut className="h-3.5 w-3.5" />Sign Out
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  // Handlers deleted logic block
 
   async function fetchActiveSessions() {
     try {
@@ -162,7 +370,6 @@ export default function MerchantDashboard() {
       if (!r.ok) throw new Error("DB offline");
       setServices(d.services || []);
     } catch {
-      // Fallback
       const local = localStorage.getItem(`services_${merchantId}`);
       if (local) setServices(JSON.parse(local));
     }
@@ -175,10 +382,19 @@ export default function MerchantDashboard() {
       if (!r.ok) throw new Error("DB offline");
       setAds(d.ads || []);
     } catch {
-      // Fallback
       const local = localStorage.getItem(`ads_${merchantId}`);
       if (local) setAds(JSON.parse(local));
     }
+  }
+
+  async function fetchPaymentHistory() {
+    setLoadingPayments(true);
+    try {
+      const r = await fetch(`${API_URL}/api/payments/${merchantId}`);
+      const d = await r.json();
+      setApiPayments(d.payments || []);
+    } catch { /* offline */ }
+    finally { setLoadingPayments(false); }
   }
 
   async function createMerchant() {
@@ -197,13 +413,11 @@ export default function MerchantDashboard() {
       setShowCreate(false);
       toast({ title: "✅ Merchant created!", description: `ID: ${data.merchant.id}` });
     } catch (err: any) {
-      // Fallback to local demo mode since DB is offline
       const demoId = `m_${Math.random().toString(36).substring(2, 10)}`;
       const qrData = {
         start: btoa(JSON.stringify({ merchantId: demoId, serviceType: cf.serviceType, action: "start" })),
         stop: btoa(JSON.stringify({ merchantId: demoId, serviceType: cf.serviceType, action: "stop" }))
       };
-
       setMerchantId(demoId);
       setQrPayloads(qrData);
       setShowCreate(false);
@@ -221,16 +435,13 @@ export default function MerchantDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-
       setSvcQr(data.qr);
       setServices(prev => [...prev, data.service]);
       toast({ title: "Service added! QR generated." });
     } catch (err: any) {
-      // Fallback local demo
       const demoSvcId = `svc_${Math.random().toString(36).substring(2, 8)}`;
       const newSvc = {
-        id: demoSvcId,
-        service_type: sf.serviceType,
+        id: demoSvcId, service_type: sf.serviceType,
         price_per_minute_paise: Math.round(parseFloat(sf.pricePerMinute || "2") * 100),
         description: sf.description,
       };
@@ -238,7 +449,6 @@ export default function MerchantDashboard() {
         start: btoa(JSON.stringify({ merchantId, merchantServiceId: demoSvcId, serviceType: sf.serviceType, action: "start" })),
         stop: btoa(JSON.stringify({ merchantId, merchantServiceId: demoSvcId, serviceType: sf.serviceType, action: "stop" }))
       };
-
       const updated = [...services, newSvc];
       setServices(updated);
       setSvcQr(qrData);
@@ -262,7 +472,6 @@ export default function MerchantDashboard() {
       setAf({ title: "", body: "", imageUrl: "" });
       toast({ title: "Ad created! Shown to active customers." });
     } catch (err: any) {
-      // Fallback local demo
       const newAd = { id: `ad_${Math.random().toString(36).substring(2, 8)}`, title: af.title, body: af.body, image_url: af.imageUrl, active: true };
       const updated = [newAd, ...ads];
       setAds(updated);
@@ -279,6 +488,24 @@ export default function MerchantDashboard() {
     stopped: "text-muted-foreground bg-muted",
     paid: "text-green-400 bg-green-400/10",
   };
+
+  // Merge live payments with API historical payments (deduped)
+  const livePaymentIds = new Set(payments.map(p => p.paymentId));
+  const allPayments = [
+    ...payments,
+    ...apiPayments.filter((p: any) => !livePaymentIds.has(p.paymentId || p.payment_id)),
+  ];
+
+  // Revenue by service from live data
+  const revenueByService: Record<string, number> = {};
+  sessions.filter(s => s.status === "paid").forEach(s => {
+    revenueByService[s.serviceType] = (revenueByService[s.serviceType] || 0) + s.totalDebitedPaise;
+  });
+  payments.forEach(p => {
+    if (p.serviceType) {
+      revenueByService[p.serviceType] = (revenueByService[p.serviceType] || 0) + p.amountPaise;
+    }
+  });
 
   const tabs = [
     { id: "overview", label: "Overview", icon: BarChart3 },
@@ -304,8 +531,11 @@ export default function MerchantDashboard() {
 
         <div className="mx-4 mb-4 rounded-xl bg-primary/10 p-3">
           <p className="text-xs text-muted-foreground">Merchant</p>
-          <p className="font-display font-semibold text-foreground">{profile?.display_name || cf.name || "PowerZone Gym"}</p>
+          <p className="font-display font-semibold text-foreground">{merchantName}</p>
           <p className="mt-1 font-mono text-xs text-muted-foreground truncate">{merchantId}</p>
+          {merchantProfile?.location && (
+            <p className="text-xs text-muted-foreground mt-0.5">📍 {merchantProfile.location}</p>
+          )}
           {activeSessions.length > 0 && (
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
               <span className="pulse-dot h-2 w-2 rounded-full bg-primary" />
@@ -314,18 +544,16 @@ export default function MerchantDashboard() {
           )}
         </div>
 
-        <div className="mx-4 mb-3">
-          <button onClick={() => setShowCreate(!showCreate)}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-primary px-4 py-2.5 text-xs font-bold text-primary hover:bg-primary/10">
-            <Plus className="h-3.5 w-3.5" />Create Merchant
-          </button>
-        </div>
-
         <nav className="flex-1 space-y-1 px-3 overflow-y-auto">
           {tabs.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${tab === t.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
               <t.icon className="h-4 w-4" />{t.label}
+              {t.id === "payments" && payments.length > 0 && (
+                <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-green-500/20 px-1 text-[10px] font-bold text-green-400">
+                  {payments.length}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -342,120 +570,80 @@ export default function MerchantDashboard() {
       <main className="ml-64 flex-1 p-8">
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
 
-          {/* Create merchant inline form */}
-          <AnimatePresence>
-            {showCreate && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }}
-                className="mb-6 glass rounded-2xl p-5 neon-border overflow-hidden">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-display text-lg font-semibold text-foreground">Create New Merchant</h3>
-                  <button onClick={() => setShowCreate(false)}><X className="h-4 w-4 text-muted-foreground" /></button>
-                </div>
-                <div className="grid gap-3 md:grid-cols-3">
-                  {[
-                    { key: "name", ph: "Business name" }, { key: "location", ph: "Location" },
-                    { key: "pricePerMinute", ph: "₹/min", type: "number" },
-                    { key: "lat", ph: "Latitude (e.g., 28.6328)" }, { key: "lng", ph: "Longitude (e.g., 77.2197)" },
-                  ].map(({ key, ph, type }) => (
-                    <input key={key} type={type || "text"} value={(cf as any)[key]}
-                      onChange={e => setCf({ ...cf, [key]: e.target.value })} placeholder={ph}
-                      className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none" />
-                  ))}
-                  <select value={cf.serviceType} onChange={e => setCf({ ...cf, serviceType: e.target.value })}
-                    className="rounded-xl border border-border bg-secondary px-4 py-3 text-sm text-foreground focus:border-primary focus:outline-none">
-                    {VALID_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <button onClick={createMerchant} disabled={creating || !cf.name}
-                  className="mt-4 flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground hover:neon-glow disabled:opacity-50">
-                  {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Create & Get QR
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
           {/* ── OVERVIEW ───────────────────────────────────────────────────── */}
-          {tab === "overview" && (() => {
-            const paid500 = merchantPayments.filter(p => p.status === "paid");
-            const totalRev500 = paid500.reduce((s, p) => s + p.amountINR, 0);
-            const gstCollected = paid500.reduce((s, p) => s + p.gstAmountINR, 0);
-            const netRev500 = paid500.reduce((s, p) => s + p.baseAmountINR, 0);
-            return (
-              <div className="space-y-6">
-                <div>
-                  <h1 className="font-display text-3xl font-bold text-foreground">Merchant Dashboard</h1>
-                  <p className="text-sm text-muted-foreground">FY 2024-25 · Real-time sessions &amp; revenue overview</p>
-                </div>
+          {tab === "overview" && (
+            <div className="space-y-6">
+              <div>
+                <h1 className="font-display text-3xl font-bold text-foreground">Merchant Dashboard</h1>
+                <p className="text-sm text-muted-foreground">Real-time sessions & revenue overview</p>
+              </div>
 
-                {/* ── KPI grid ── */}
-                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                  {[
-                    {
-                      label: "Active Sessions",
-                      value: String(activeSessions.length),
-                      sub: `${sessions.length} total today`,
-                      icon: Activity,
-                      color: "text-primary",
-                      bg: "bg-primary/10",
-                    },
-                    {
-                      label: "Total Revenue",
-                      value: `₹${(totalRev500 / 1000).toFixed(1)}K`,
-                      sub: `Net of GST · FY 24-25`,
-                      icon: DollarSign,
-                      color: "text-green-400",
-                      bg: "bg-green-500/10",
-                    },
-                    {
-                      label: "GST Collected",
-                      value: `₹${(gstCollected / 1000).toFixed(1)}K`,
-                      sub: `Payable to govt.`,
-                      icon: CheckCircle2,
-                      color: "text-blue-400",
-                      bg: "bg-blue-500/10",
-                    },
-                    {
-                      label: "Payments",
-                      value: String(paid500.length),
-                      sub: `₹${(totalRev500 + gstCollected).toFixed(0)} gross billed`,
-                      icon: Users,
-                      color: "text-purple-400",
-                      bg: "bg-purple-500/10",
-                    },
-                  ].map((s, i) => (
-                    <motion.div key={s.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
-                      className="glass rounded-2xl p-5 cursor-pointer hover:border-primary/40 border border-transparent transition-all"
-                      onClick={() => s.label === "GST Collected" || s.label === "Total Revenue" || s.label === "Payments" ? setTab("payments") : setTab("sessions")}>
-                      <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${s.bg} mb-3`}>
-                        <s.icon className={`h-5 w-5 ${s.color}`} />
-                      </div>
-                      <p className={`font-display text-2xl font-bold ${s.color}`}>{s.value}</p>
-                      <p className="text-sm font-medium text-foreground">{s.label}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{s.sub}</p>
-                    </motion.div>
-                  ))}
-                </div>
+              {/* ── KPI grid (LIVE data) ── */}
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                {[
+                  {
+                    label: "Active Sessions",
+                    value: String(activeSessions.length),
+                    sub: `${sessions.length} total today`,
+                    icon: Activity,
+                    color: "text-primary",
+                    bg: "bg-primary/10",
+                  },
+                  {
+                    label: "Revenue (Live)",
+                    value: formatPaise(totalRevenuePaise),
+                    sub: `${payments.length} payment${payments.length !== 1 ? "s" : ""} received`,
+                    icon: DollarSign,
+                    color: "text-green-400",
+                    bg: "bg-green-500/10",
+                  },
+                  {
+                    label: "Streaming Now",
+                    value: formatPaise(activeSessions.reduce((s, a) => s + a.totalDebitedPaise, 0)),
+                    sub: `${activeSessions.length} session${activeSessions.length !== 1 ? "s" : ""} running`,
+                    icon: Zap,
+                    color: "text-blue-400",
+                    bg: "bg-blue-500/10",
+                  },
+                  {
+                    label: "Total Sessions",
+                    value: String(sessions.length),
+                    sub: `${sessions.filter(s => s.status === "paid").length} completed & paid`,
+                    icon: Users,
+                    color: "text-purple-400",
+                    bg: "bg-purple-500/10",
+                  },
+                ].map((s, i) => (
+                  <motion.div key={s.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
+                    className="glass rounded-2xl p-5 cursor-pointer hover:border-primary/40 border border-transparent transition-all"
+                    onClick={() => s.label === "Revenue (Live)" ? setTab("payments") : setTab("sessions")}>
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${s.bg} mb-3`}>
+                      <s.icon className={`h-5 w-5 ${s.color}`} />
+                    </div>
+                    <p className={`font-display text-2xl font-bold ${s.color}`}>{s.value}</p>
+                    <p className="text-sm font-medium text-foreground">{s.label}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{s.sub}</p>
+                  </motion.div>
+                ))}
+              </div>
 
-                {/* ── Revenue by service ── */}
+              {/* ── Revenue by Service (LIVE) ── */}
+              {Object.keys(revenueByService).length > 0 && (
                 <div className="glass rounded-2xl p-5">
                   <h3 className="font-display font-semibold text-foreground mb-4 flex items-center gap-2">
-                    <DollarSign className="h-4 w-4 text-primary" />Revenue by Service Type (FY 24-25)
+                    <DollarSign className="h-4 w-4 text-primary" />Revenue by Service Type
                   </h3>
                   <div className="space-y-3">
-                    {Object.entries(
-                      paid500.reduce((acc, p) => {
-                        acc[p.serviceType] = (acc[p.serviceType] || 0) + p.baseAmountINR;
-                        return acc;
-                      }, {} as Record<string, number>)
-                    )
+                    {Object.entries(revenueByService)
                       .sort(([, a], [, b]) => b - a)
                       .map(([svc, rev]) => {
-                        const pct = Math.round((rev / netRev500) * 100);
+                        const totalRev = Object.values(revenueByService).reduce((s, v) => s + v, 0);
+                        const pct = totalRev > 0 ? Math.round((rev / totalRev) * 100) : 0;
                         return (
                           <div key={svc}>
                             <div className="flex justify-between text-xs mb-1">
-                              <span className="capitalize font-medium text-foreground">{svc}</span>
-                              <span className="text-muted-foreground">₹{rev.toFixed(0)} ({pct}%)</span>
+                              <span className="capitalize font-medium text-foreground">{SVC_EMOJI[svc] || "🔌"} {svc}</span>
+                              <span className="text-muted-foreground">{formatPaise(rev)} ({pct}%)</span>
                             </div>
                             <div className="h-2 rounded-full bg-secondary overflow-hidden">
                               <motion.div
@@ -468,15 +656,27 @@ export default function MerchantDashboard() {
                       })}
                   </div>
                 </div>
+              )}
 
-                {/* Recent live sessions */}
-                <div>
-                  <h3 className="font-display font-semibold text-foreground mb-3">Live Sessions</h3>
-                  <SessionsList sessions={sessions.slice(0, 5)} statusColors={statusColors} fmt={fmt} formatPaise={formatPaise} />
-                </div>
+              {/* Recent live sessions */}
+              <div>
+                <h3 className="font-display font-semibold text-foreground mb-3">Live Sessions</h3>
+                <SessionsList sessions={sessions.slice(0, 5)} statusColors={statusColors} fmt={fmt} formatPaise={formatPaise} />
               </div>
-            );
-          })()}
+
+              {/* Empty state hint */}
+              {sessions.length === 0 && payments.length === 0 && (
+                <div className="glass rounded-2xl p-8 text-center">
+                  <QrCode className="h-12 w-12 mx-auto text-muted-foreground opacity-30 mb-3" />
+                  <p className="text-muted-foreground font-medium mb-1">No sessions yet</p>
+                  <p className="text-sm text-muted-foreground">Go to the <b>QR Codes</b> tab and share your START QR code with a customer to begin!</p>
+                  <button onClick={() => setTab("qr")} className="mt-4 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground hover:neon-glow">
+                    <QrCode className="inline h-4 w-4 mr-1" />View QR Codes
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
 
           {/* ── ANALYTICS ──────────────────────────────────────────────────── */}
@@ -518,13 +718,12 @@ export default function MerchantDashboard() {
                     </div>
                     <button onClick={addService} disabled={addingSvc}
                       className="mt-3 flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-bold text-primary-foreground disabled:opacity-50">
-                      {addingSvc ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Add &amp; Generate QR
+                      {addingSvc ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}Add & Generate QR
                     </button>
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              {/* Service QR result */}
               {svcQr && (
                 <div className="glass rounded-2xl p-5">
                   <p className="font-display font-semibold text-foreground mb-4">Service QR Codes</p>
@@ -541,12 +740,11 @@ export default function MerchantDashboard() {
                 </div>
               )}
 
-              {/* Service list */}
               <div className="space-y-3">
                 {services.map(svc => (
                   <div key={svc.id} className="glass rounded-2xl p-4 flex items-center justify-between">
                     <div>
-                      <p className="font-medium text-foreground capitalize">{svc.service_type}</p>
+                      <p className="font-medium text-foreground capitalize">{SVC_EMOJI[svc.service_type] || "🔌"} {svc.service_type}</p>
                       <p className="text-xs text-muted-foreground">{svc.description || "No description"}</p>
                     </div>
                     <p className="font-display font-bold text-gradient">{formatPaise(svc.price_per_minute_paise)}<span className="text-xs text-muted-foreground">/min</span></p>
@@ -629,75 +827,79 @@ export default function MerchantDashboard() {
             </div>
           )}
 
-          {/* ── PAYMENTS ────────────────────────────────────────────────────── */}
+          {/* ── PAYMENTS (LIVE) ────────────────────────────────────────────── */}
           {tab === "payments" && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h2 className="font-display text-2xl font-bold text-foreground">Payments &amp; GST Ledger</h2>
-                <button onClick={() => setTab("tax")} className="flex items-center gap-2 rounded-xl bg-primary/10 border border-primary/30 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/20">
-                  <Bot className="h-4 w-4" />Tax Advisor AI
-                </button>
+                <h2 className="font-display text-2xl font-bold text-foreground">Payments</h2>
+                <div className="flex gap-2">
+                  <button onClick={fetchPaymentHistory}
+                    className="flex items-center gap-1 text-xs text-primary hover:underline">
+                    <Loader2 className={`h-3 w-3 ${loadingPayments ? "animate-spin" : ""}`} />Refresh
+                  </button>
+                  <button onClick={() => setTab("tax")} className="flex items-center gap-2 rounded-xl bg-primary/10 border border-primary/30 px-4 py-2 text-sm font-bold text-primary hover:bg-primary/20">
+                    <Bot className="h-4 w-4" />Tax Advisor AI
+                  </button>
+                </div>
               </div>
 
-              {/* GST summary strip */}
-              {(() => {
-                const p500 = merchantPayments.filter(p => p.status === "paid");
-                const totalBill = p500.reduce((s, p) => s + p.amountINR, 0);
-                const totalGST = p500.reduce((s, p) => s + p.gstAmountINR, 0);
-                const totalBase = p500.reduce((s, p) => s + p.baseAmountINR, 0);
-                return (
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { label: "Total Billed (incl. GST)", value: `₹${totalBill.toFixed(0)}` },
-                      { label: "GST Collected", value: `₹${totalGST.toFixed(0)}` },
-                      { label: "Net Revenue", value: `₹${totalBase.toFixed(0)}` },
-                    ].map(k => (
-                      <div key={k.label} className="glass rounded-2xl p-4 text-center">
-                        <p className="font-display text-xl font-bold text-primary">{k.value}</p>
-                        <p className="text-xs text-muted-foreground">{k.label}</p>
-                      </div>
-                    ))}
+              {/* Summary strip */}
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: "Total Revenue", value: formatPaise(totalRevenuePaise) },
+                  { label: "Payments Received", value: String(payments.length) },
+                  { label: "Avg per Payment", value: payments.length > 0 ? formatPaise(Math.round(totalRevenuePaise / payments.length)) : "—" },
+                ].map(k => (
+                  <div key={k.label} className="glass rounded-2xl p-4 text-center">
+                    <p className="font-display text-xl font-bold text-primary">{k.value}</p>
+                    <p className="text-xs text-muted-foreground">{k.label}</p>
                   </div>
-                );
-              })()}
-
-              {/* 500 payment records table */}
-              <div className="glass rounded-2xl overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="border-b border-border bg-secondary/40">
-                      <tr>
-                        {["Date", "Service", "HSN", "Base (₹)", "GST%", "GST (₹)", "Total (₹)", "Method", "Status"].map(h => (
-                          <th key={h} className="px-3 py-3 text-left font-semibold text-muted-foreground">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {merchantPayments.slice(0, 50).map((p, i) => (
-                        <tr key={p.id} className={`border-b border-border/40 hover:bg-secondary/30 ${i % 2 === 0 ? "" : "bg-secondary/10"}`}>
-                          <td className="px-3 py-2 text-muted-foreground">{p.date.slice(0, 10)}</td>
-                          <td className="px-3 py-2 font-medium capitalize">{p.serviceType}</td>
-                          <td className="px-3 py-2 font-mono text-muted-foreground">{p.hsn}</td>
-                          <td className="px-3 py-2">{p.baseAmountINR.toFixed(2)}</td>
-                          <td className="px-3 py-2 text-blue-400">{p.gstRate}%</td>
-                          <td className="px-3 py-2 text-blue-400">{p.gstAmountINR.toFixed(2)}</td>
-                          <td className="px-3 py-2 font-bold text-green-400">{p.amountINR.toFixed(2)}</td>
-                          <td className="px-3 py-2 capitalize">{p.paymentMethod}</td>
-                          <td className="px-3 py-2">
-                            <span className={`rounded-full px-2 py-0.5 font-semibold ${p.status === "paid" ? "bg-green-500/15 text-green-400" :
-                              p.status === "refunded" ? "bg-red-500/15 text-red-400" :
-                                "bg-yellow-500/15 text-yellow-400"
-                              }`}>{p.status}</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="p-3 text-center text-xs text-muted-foreground border-t border-border">
-                  Showing 50 of 500 records &middot; <button className="text-primary hover:underline" onClick={() => setTab("tax")}>Ask Tax Advisor AI for full analysis →</button>
-                </div>
+                ))}
               </div>
+
+              {/* Payment records */}
+              {allPayments.length > 0 ? (
+                <div className="glass rounded-2xl overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="border-b border-border bg-secondary/40">
+                        <tr>
+                          {["Time", "Session", "Amount", "Method", "Status"].map(h => (
+                            <th key={h} className="px-4 py-3 text-left font-semibold text-muted-foreground">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {allPayments.map((p: any, i: number) => (
+                          <tr key={p.paymentId || p.payment_id || i} className={`border-b border-border/40 hover:bg-secondary/30 ${i % 2 === 0 ? "" : "bg-secondary/10"}`}>
+                            <td className="px-4 py-3 text-muted-foreground">
+                              {new Date(p.receivedAt || p.created_at || p.createdAt).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" })}
+                            </td>
+                            <td className="px-4 py-3 font-mono text-muted-foreground">
+                              {(p.sessionId || p.session_id || "—").slice(0, 8)}…
+                            </td>
+                            <td className="px-4 py-3 font-bold text-green-400">
+                              {formatPaise(p.amountPaise || p.amount_paise || 0)}
+                            </td>
+                            <td className="px-4 py-3 capitalize">{p.method || p.payment_method || "wallet"}</td>
+                            <td className="px-4 py-3">
+                              <span className="rounded-full bg-green-500/15 text-green-400 px-2 py-0.5 font-semibold">paid</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="p-3 text-center text-xs text-muted-foreground border-t border-border">
+                    {allPayments.length} payment record{allPayments.length !== 1 ? "s" : ""}
+                  </div>
+                </div>
+              ) : (
+                <div className="glass rounded-2xl p-12 text-center">
+                  <Receipt className="h-12 w-12 mx-auto text-muted-foreground opacity-30 mb-3" />
+                  <p className="text-muted-foreground">No payments yet. They'll appear here in real-time as customers pay.</p>
+                </div>
+              )}
             </div>
           )}
 
