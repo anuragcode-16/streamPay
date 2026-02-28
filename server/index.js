@@ -94,6 +94,7 @@ const memStore = {
     ledger: new Map(),
     payments: new Map(),
     merchants: new Map(),
+    wallet_transactions: [],
 
     // ── Demo merchant always available ─────────────────────────────────────
     _init() {
@@ -112,7 +113,7 @@ const memStore = {
 
     getWallet(userId) {
         if (!this.wallets.has(userId)) {
-            this.wallets.set(userId, { balance_paise: 50000, wallet_id: `ppw_${userId.slice(0, 8)}` });
+            this.wallets.set(userId, { balance_paise: 0, wallet_id: `PPW-${userId.slice(0, 8).toUpperCase()}` });
         }
         return this.wallets.get(userId);
     },
@@ -127,6 +128,15 @@ const memStore = {
     creditWallet(userId, amount) {
         const w = this.getWallet(userId);
         w.balance_paise += amount;
+        this.wallet_transactions.push({
+            id: uuidv4(),
+            user_id: userId,
+            wallet_id: w.wallet_id,
+            type: "topup",
+            amount_paise: amount,
+            status: "completed",
+            created_at: new Date().toISOString()
+        });
         return w;
     },
 
@@ -283,7 +293,7 @@ app.get("/api/wallet/transactions/:userId", async (req, res) => {
         } catch (err) { console.warn("[wallet/transactions] DB error:", err.message); }
     }
     // Build from memStore ledger
-    const txs = [];
+    const txs = memStore.wallet_transactions.filter(t => t.user_id === req.params.userId) || [];
     for (const [sessionId, entries] of memStore.ledger.entries()) {
         for (const e of entries) {
             if (e.user_id === req.params.userId) {
@@ -294,7 +304,37 @@ app.get("/api/wallet/transactions/:userId", async (req, res) => {
     res.json({ transactions: txs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
-// POST /api/pay-wallet — atomic wallet deduction → emits payment:success
+// POST /api/wallet/credit — direct credit (for simulated UPI collect)
+app.post("/api/wallet/credit", async (req, res) => {
+    const { userId, amountPaise } = req.body;
+    if (!userId || !amountPaise || amountPaise <= 0) {
+        return res.status(400).json({ error: "userId and amountPaise required" });
+    }
+    if (dbOnline) {
+        try {
+            const walletRes = await db.query(
+                "UPDATE wallets SET balance_paise = balance_paise + $1 WHERE user_id = $2 RETURNING *",
+                [amountPaise, userId]
+            );
+            if (walletRes.rowCount === 0) return res.status(404).json({ error: "Wallet not found" });
+            const newBalance = walletRes.rows[0].balance_paise;
+            const walletId = walletRes.rows[0].wallet_id;
+            await db.query(
+                `INSERT INTO wallet_transactions (id, wallet_id, user_id, type, amount_paise, status, created_at)
+                 VALUES ($1, $2, $3, 'topup', $4, 'completed', NOW())`,
+                [uuidv4(), walletId, userId, amountPaise]
+            );
+            io.to(`user:${userId}`).emit("wallet:update", { balancePaise: newBalance, event: "topup", amountPaise });
+            return res.json({ ok: true, newBalancePaise: newBalance });
+        } catch (err) { console.warn("[wallet/credit] DB error:", err.message); }
+    }
+    // In-memory fallback
+    const updated = memStore.creditWallet(userId, amountPaise);
+    io.to(`user:${userId}`).emit("wallet:update", { balancePaise: updated.balance_paise, event: "topup", amountPaise });
+    res.json({ ok: true, newBalancePaise: updated.balance_paise });
+});
+
+
 app.post("/api/pay-wallet", async (req, res) => {
     const { userId, sessionId } = req.body;
     if (!userId || !sessionId) return res.status(400).json({ error: "userId and sessionId required" });

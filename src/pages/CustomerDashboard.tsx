@@ -394,7 +394,7 @@ export default function CustomerDashboard() {
           )}
 
           {/* ── WALLET ───────────────────────────────────────────── */}
-          {tab === "wallet" && <WalletPage />}
+          {tab === "wallet" && <WalletPage onBalanceChange={setWalletPaise} />}
 
           {/* ── NEARBY ───────────────────────────────────────────── */}
           {tab === "nearby" && <NearbyPage />}
