@@ -305,15 +305,8 @@ app.get("/api/wallet/transactions/:userId", async (req, res) => {
             return res.json({ transactions: result.rows });
         } catch (err) { console.warn("[wallet/transactions] DB error:", err.message); }
     }
-    // Build from memStore ledger
+    // Build from memStore explicitly stored transactions
     const txs = memStore.wallet_transactions.filter(t => t.user_id === req.params.userId) || [];
-    for (const [sessionId, entries] of memStore.ledger.entries()) {
-        for (const e of entries) {
-            if (e.user_id === req.params.userId) {
-                txs.push({ type: "debit", amount_paise: e.amount_paise, session_id: sessionId, created_at: e.ts, status: "completed" });
-            }
-        }
-    }
     res.json({ transactions: txs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at)) });
 });
 
@@ -362,12 +355,23 @@ app.post("/api/pay-wallet", async (req, res) => {
             if (session.payment_status === "paid") { await client.query("ROLLBACK"); return res.status(409).json({ error: "Already paid" }); }
             const finalAmountPaise = session.final_amount_paise || 0;
             if (finalAmountPaise <= 0) { await client.query("ROLLBACK"); return res.status(400).json({ error: "No amount to charge" }); }
+
+            // The worker has already deducted finalAmountPaise over time, so we just read the final balance
             const walletRes = await client.query(
-                `UPDATE wallets SET balance_paise = balance_paise - $1 WHERE user_id = $2 AND balance_paise >= $1 RETURNING *`,
-                [finalAmountPaise, userId]
+                `SELECT wallet_id, balance_paise FROM wallets WHERE user_id = $1`,
+                [userId]
             );
-            if (walletRes.rowCount === 0) { await client.query("ROLLBACK"); return res.status(402).json({ error: "Insufficient wallet balance" }); }
+            if (walletRes.rowCount === 0) { await client.query("ROLLBACK"); return res.status(404).json({ error: "Wallet not found" }); }
+
             const paymentId = `ppw_${uuidv4().replace(/-/g, "").slice(0, 16)}`;
+
+            // Add a single consolidated transaction for history
+            await client.query(
+                `INSERT INTO wallet_transactions (id, wallet_id, user_id, type, amount_paise, status, session_id, created_at)
+                 VALUES ($1, $2, $3, 'payment', $4, 'completed', $5, NOW())`,
+                [uuidv4(), walletRes.rows[0].wallet_id, userId, finalAmountPaise, sessionId]
+            );
+
             await client.query(
                 `INSERT INTO payments (id, user_id, merchant_id, session_id, order_id, payment_id, amount_paise, status, method)
                  VALUES ($1, $2, $3, $4, 'wallet', $5, $6, 'paid', 'wallet')`,
@@ -407,10 +411,19 @@ app.post("/api/pay-wallet", async (req, res) => {
         return res.json({ ok: true, paymentId, newBalancePaise: memStore.getWallet(userId).balance_paise });
     }
 
-    const updatedWallet = memStore.debitWallet(userId, finalAmountPaise);
-    if (!updatedWallet) {
-        return res.status(402).json({ error: "Insufficient wallet balance" });
-    }
+    const updatedWallet = memStore.getWallet(userId);
+
+    // Create one consolidated transaction history record
+    memStore.wallet_transactions.push({
+        id: uuidv4(),
+        user_id: userId,
+        wallet_id: updatedWallet.wallet_id,
+        type: "payment",
+        amount_paise: finalAmountPaise,
+        status: "completed",
+        session_id: sessionId,
+        created_at: new Date().toISOString()
+    });
 
     const paymentId = `ppw_${uuidv4().replace(/-/g, "").slice(0, 16)}`;
     session.payment_status = "paid";
