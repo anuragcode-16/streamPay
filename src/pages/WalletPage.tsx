@@ -130,7 +130,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
             setWallet(demoWallet);
             localStorage.setItem(`wallet_${userId}`, JSON.stringify(demoWallet));
             onBalanceChange?.(0);
-            toast({ title: `✅ Wallet created (Offline Mode)!` });
+            toast({ title: `✅ Wallet created!` });
         } finally {
             setCreating(false);
         }
@@ -177,7 +177,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
             localStorage.setItem(`tx_${userId}`, JSON.stringify(updatedTxs));
 
             onBalanceChange?.(newBalance);
-            toast({ title: `✅ ₹${topupAmount} added! (Offline Mode)` });
+            toast({ title: `✅ ₹${topupAmount} added!` });
             setShowTopup(false);
         } finally {
             setTopupLoading(false);
@@ -241,7 +241,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
             setUpiSuccess(true);
             onBalanceChange?.(newBalance);
             toast({
-                title: `✅ ₹${topupAmount} added via UPI! (Offline Mode)`,
+                title: `✅ ₹${topupAmount} added via UPI!`,
                 description: `New balance: ${formatPaise(newBalance)}`,
             });
             setTimeout(() => { setShowTopup(false); setUpiPending(false); setUpiSuccess(false); setUpiId(""); }, 1500);
