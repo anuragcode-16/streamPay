@@ -323,7 +323,7 @@ export default function WalletPage({ onBalanceChange }: Props) {
                         className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
                         onClick={e => { if (e.target === e.currentTarget) { setShowTopup(false); setUpiPending(false); setUpiSuccess(false); } }}
                     >
-                        <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-sm glass rounded-2xl p-6">
+                        <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-sm glass rounded-2xl p-6 max-h-[85vh] overflow-y-auto">
                             <h3 className="mb-4 font-display text-xl font-bold text-foreground">Add Money to Wallet</h3>
 
                             {/* Amount Selector */}
