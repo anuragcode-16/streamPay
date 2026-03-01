@@ -163,12 +163,10 @@ export default function MerchantDashboard() {
   // ── Check for existing merchant on mount ──────────────────────────────────
   useEffect(() => {
     async function checkMerchantProfile() {
+      if (!userId) return; // Wait for userId to be available
       setLoadingProfile(true);
-      // 1. Check localStorage for a previously linked merchant
-      const savedMerchantId = localStorage.getItem(`merchant_id_${userId}`);
-      const savedMerchantName = localStorage.getItem(`merchant_name_${userId}`);
 
-      // 2. Check backend for merchant linked to this user
+      // 1. Check backend for merchant linked to this user FIRST
       try {
         const res = await fetch(`${API_URL}/api/merchant/by-user/${userId}`);
         const d = await res.json();
@@ -178,9 +176,13 @@ export default function MerchantDashboard() {
           setLoadingProfile(false);
           return;
         }
-      } catch { /* server offline, try localStorage */ }
+      } catch { /* server offline, proceed to fallback */ }
 
-      // 3. Fallback to localStorage
+      // 2. Fallback to localStorage
+      // We check if this specific user has a merchant ID saved locally
+      const savedMerchantId = localStorage.getItem(`merchant_id_${userId}`);
+      const savedMerchantName = localStorage.getItem(`merchant_name_${userId}`);
+
       if (savedMerchantId) {
         try {
           const res = await fetch(`${API_URL}/api/merchant/${savedMerchantId}`);
@@ -191,7 +193,7 @@ export default function MerchantDashboard() {
             return;
           }
         } catch { /* offline */ }
-        // Even if server is down, use saved info
+        // Even if server is down, use saved info if we have it locally
         activateMerchant(savedMerchantId, savedMerchantName || "Merchant", null);
         setLoadingProfile(false);
         return;
