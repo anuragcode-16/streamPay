@@ -193,6 +193,7 @@ export default function MerchantDashboard() {
       // We check if this specific user has a merchant ID saved locally
       const savedMerchantId = localStorage.getItem(`merchant_id_${userId}`);
       const savedMerchantName = localStorage.getItem(`merchant_name_${userId}`);
+      const savedMerchantService = localStorage.getItem(`merchant_service_${userId}`);
 
       if (savedMerchantId) {
         try {
@@ -205,7 +206,17 @@ export default function MerchantDashboard() {
           }
         } catch { /* offline */ }
         // Even if server is down, use saved info if we have it locally
-        activateMerchant(savedMerchantId, savedMerchantName || "Merchant", null);
+        activateMerchant(savedMerchantId, savedMerchantName || "Merchant", { service_type: savedMerchantService || "gym" });
+        setLoadingProfile(false);
+        return;
+      }
+
+      // 3. Fallback for the explicit Demo Account user
+      if (userId === "user_demo_merchant") {
+        activateMerchant(DEMO_MERCHANT_ID, "PowerZone Gym (Demo)", {
+          id: DEMO_MERCHANT_ID, name: "PowerZone Gym (Demo)", service_type: "gym",
+          price_per_minute_paise: 200, location: "Delhi NCR",
+        });
         setLoadingProfile(false);
         return;
       }
@@ -222,8 +233,11 @@ export default function MerchantDashboard() {
     setMerchantProfile(profileData);
     localStorage.setItem(`merchant_id_${userId}`, id);
     localStorage.setItem(`merchant_name_${userId}`, name);
+    if (profileData?.service_type) {
+      localStorage.setItem(`merchant_service_${userId}`, profileData.service_type);
+    }
 
-    const svcType = profileData?.service_type || "gym";
+    const svcType = profileData?.service_type || localStorage.getItem(`merchant_service_${userId}`) || "gym";
     setQrPayloads({
       start: btoa(JSON.stringify({ merchantId: id, serviceType: svcType, action: "start" })),
       stop: btoa(JSON.stringify({ merchantId: id, serviceType: svcType, action: "stop" })),
@@ -513,7 +527,6 @@ export default function MerchantDashboard() {
     { id: "overview", label: "Overview", icon: BarChart3 },
     { id: "analytics", label: "Analytics", icon: LineChart },
     { id: "sessions", label: "Sessions", icon: Activity },
-    { id: "services", label: "Services", icon: Wrench },
     { id: "ads", label: "Ads", icon: Megaphone },
     { id: "qr", label: "QR Codes", icon: QrCode },
     { id: "payments", label: "Payments", icon: Receipt },
@@ -558,6 +571,12 @@ export default function MerchantDashboard() {
           <p className="mt-1 font-mono text-xs text-muted-foreground truncate">{merchantId}</p>
           {merchantProfile?.location && (
             <p className="text-xs text-muted-foreground mt-0.5">📍 {merchantProfile.location}</p>
+          )}
+          {merchantProfile?.service_type && (
+            <div className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-secondary px-2 py-1 text-xs font-semibold uppercase text-secondary-foreground shadow-sm">
+              <span>{SVC_EMOJI[merchantProfile.service_type] || "🔌"}</span>
+              {merchantProfile.service_type}
+            </div>
           )}
           {activeSessions.length > 0 && (
             <div className="mt-1.5 flex items-center gap-1.5 text-xs text-primary">
@@ -703,7 +722,7 @@ export default function MerchantDashboard() {
 
 
           {/* ── ANALYTICS ──────────────────────────────────────────────────── */}
-          {tab === "analytics" && <AnalyticsDashboard payments={payments} liveSessions={liveSessions} />}
+          {tab === "analytics" && <AnalyticsDashboard merchantId={merchantId} payments={payments} liveSessions={liveSessions} />}
 
           {/* ── SESSIONS ───────────────────────────────────────────────────── */}
           {tab === "sessions" && (

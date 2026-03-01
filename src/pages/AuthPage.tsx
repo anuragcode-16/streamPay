@@ -49,6 +49,16 @@ const AuthPage = () => {
         } else if (data.user) {
           // Immediate redirection based on metadata
           const role = data.user.user_metadata?.role || "customer";
+
+          // Fix for DB-offline mode: auto-populate local storage for existing merchants
+          // so they don't see the "Register Your Business" screen.
+          if (role === "merchant") {
+            const fallbackId = `m_${data.user.id.replace(/-/g, "").substring(0, 10)}`;
+            const fallbackName = data.user.user_metadata?.display_name || data.user.user_metadata?.name || "Merchant";
+            localStorage.setItem(`merchant_id_${data.user.id}`, fallbackId);
+            localStorage.setItem(`merchant_name_${data.user.id}`, fallbackName);
+          }
+
           toast({ title: "Welcome back!", description: "Signed in successfully." });
           navigate(role === "merchant" ? "/merchant" : "/customer");
         }

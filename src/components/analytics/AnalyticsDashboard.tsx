@@ -16,6 +16,7 @@ interface Payment { sessionId: string; paymentId?: string; amountPaise: number; 
 interface LiveSession { userId: string; serviceType: string; elapsedSec: number; }
 
 export interface AnalyticsProps {
+    merchantId?: string;
     payments?: Payment[];
     liveSessions?: Map<string, LiveSession>;
 }
@@ -70,7 +71,7 @@ function bg(hex: string, a = 0.18) {
     return hex.replace("1)", `${a})`);
 }
 
-export default function AnalyticsDashboard({ payments = [], liveSessions = new Map() }: AnalyticsProps) {
+export default function AnalyticsDashboard({ merchantId, payments = [], liveSessions = new Map() }: AnalyticsProps) {
     const [isChartReady, setIsChartReady] = useState(false);
 
     useEffect(() => {
@@ -80,7 +81,8 @@ export default function AnalyticsDashboard({ payments = [], liveSessions = new M
 
     try {
         const data = useMemo<Transaction[]>(() => {
-            const base = [...transactions];
+            const isDemo = merchantId === "m_demo_gym001";
+            const base = isDemo ? [...transactions] : [];
             payments.forEach(p => {
                 const ls = liveSessions.get(p.sessionId);
                 const ts = new Date(p.receivedAt);
