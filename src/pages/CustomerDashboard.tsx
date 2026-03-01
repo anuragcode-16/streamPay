@@ -18,7 +18,7 @@ import { io, Socket } from "socket.io-client";
 import {
   Zap, Wallet, QrCode, MapPin, History, LogOut, Clock,
   AlertTriangle, CheckCircle2, Loader2, TrendingDown,
-  Download, Play, Square, CreditCard, Megaphone, X,
+  Download, Play, Square, CreditCard, Megaphone, X, Menu,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -57,6 +57,7 @@ export default function CustomerDashboard() {
   const { toast } = useToast();
 
   const [tab, setTab] = useState("home");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [walletPaise, setWalletPaise] = useState(0);
   // Live session map (socket-driven)
   const [sessionMap, setSessionMap] = useState<Map<string, SessionRow>>(new Map());
@@ -267,14 +268,34 @@ export default function CustomerDashboard() {
 
   return (
     <div className="flex min-h-screen bg-background">
+      {/* Mobile Header */}
+      <div className="md:hidden fixed top-0 w-full z-30 flex items-center justify-between border-b border-border bg-card p-4">
+        <div className="flex items-center gap-2">
+          <Zap className="h-5 w-5 text-primary" />
+          <span className="font-display font-bold text-lg">STREAM<span className="neon-text">PAY</span></span>
+        </div>
+        <button onClick={() => setMobileMenuOpen(true)} className="p-2 text-foreground">
+          <Menu className="h-6 w-6" />
+        </button>
+      </div>
+
+      {/* Mobile Sidebar Overlay */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm md:hidden" onClick={() => setMobileMenuOpen(false)} />
+      )}
 
       {/* ── Sidebar ───────────────────────────────────────────────────── */}
-      <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-border bg-card">
-        <div className="flex items-center gap-2 p-6">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
-            <Zap className="h-5 w-5 text-primary-foreground" />
+      <aside className={`fixed left-0 top-0 z-50 flex h-screen w-64 flex-col border-r border-border bg-card transition-transform duration-300 md:translate-x-0 ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"}`}>
+        <div className="flex items-center justify-between p-6">
+          <div className="flex items-center gap-2">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
+              <Zap className="h-5 w-5 text-primary-foreground" />
+            </div>
+            <span className="font-display text-lg font-bold">STREAM<span className="neon-text">PAY</span></span>
           </div>
-          <span className="font-display text-lg font-bold">STREAM<span className="neon-text">PAY</span></span>
+          <button className="md:hidden p-1 text-muted-foreground" onClick={() => setMobileMenuOpen(false)}>
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
         {/* Wallet balance */}
@@ -303,7 +324,7 @@ export default function CustomerDashboard() {
 
         <nav className="flex-1 space-y-1 px-3 overflow-y-auto">
           {tabs.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
+            <button key={t.id} onClick={() => { setTab(t.id); setMobileMenuOpen(false); }}
               className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${tab === t.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
               <t.icon className="h-4 w-4" />{t.label}
               {t.id === "history" && allLiveSessions.length > 0 && (
@@ -324,7 +345,7 @@ export default function CustomerDashboard() {
       </aside>
 
       {/* ── Main Content ──────────────────────────────────────────────── */}
-      <main className="ml-64 flex-1 p-8">
+      <main className="flex-1 w-full md:ml-64 p-4 pt-24 md:p-8 md:pt-8 min-w-0">
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
 
           {/* ── HOME ─────────────────────────────────────────────── */}
