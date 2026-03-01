@@ -14,7 +14,9 @@
 import { useEffect, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 
-const SERVER_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const SERVER_URL = import.meta.env.VITE_API_URL?.includes("localhost")
+    ? `${window.location.protocol}//${window.location.hostname}:4000`
+    : (import.meta.env.VITE_API_URL || "http://localhost:4000");
 
 interface UseSocketOptions {
     role: "user" | "merchant";

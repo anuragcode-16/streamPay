@@ -17,7 +17,9 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_URL = import.meta.env.VITE_API_URL?.includes("localhost")
+    ? `${window.location.protocol}//${window.location.hostname}:4000`
+    : (import.meta.env.VITE_API_URL || "http://localhost:4000");
 
 function formatPaise(paise: number) {
     return `₹${(paise / 100).toFixed(2)}`;

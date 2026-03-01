@@ -11,7 +11,9 @@ import { motion } from "framer-motion";
 import { Download, ArrowLeft, Zap, CheckCircle2, Clock, MapPin, Hash, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_URL = import.meta.env.VITE_API_URL?.includes("localhost")
+    ? `${window.location.protocol}//${window.location.hostname}:4000`
+    : (import.meta.env.VITE_API_URL || "http://localhost:4000");
 
 interface Invoice {
     invoiceId: string; generatedAt: string;

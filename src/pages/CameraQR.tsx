@@ -25,7 +25,9 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_URL = import.meta.env.VITE_API_URL?.includes("localhost")
+    ? `${window.location.protocol}//${window.location.hostname}:4000`
+    : (import.meta.env.VITE_API_URL || "http://localhost:4000");
 const DEMO_MERCHANT_ID = "m_demo_gym001";
 const DEMO_SERVICE_TYPE = "gym";
 
@@ -412,15 +414,13 @@ export default function CameraQR() {
                         {liveCam && <span className="h-2 w-2 rounded-full bg-primary animate-pulse" />}
                     </button>
                     {liveCamErr && <p className="px-4 pb-3 text-xs text-yellow-400">{liveCamErr}</p>}
-                    {liveCam && (
-                        <div className="relative bg-black">
-                            <video ref={videoRef} playsInline muted className="w-full" style={{ maxHeight: 260, objectFit: "cover" }} />
-                            <canvas ref={canvasRef} className="hidden" />
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                <div className="h-48 w-48 rounded-2xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
-                            </div>
+                    <div className={`relative bg-black ${liveCam ? "block" : "hidden"}`}>
+                        <video ref={videoRef} playsInline muted className="w-full" style={{ maxHeight: 260, objectFit: "cover" }} />
+                        <canvas ref={canvasRef} className="hidden" />
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="h-48 w-48 rounded-2xl border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]" />
                         </div>
-                    )}
+                    </div>
                 </div>
 
                 {/* ═══════════════════════════════════════════════════════════

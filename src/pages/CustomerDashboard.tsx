@@ -25,7 +25,9 @@ import { useToast } from "@/hooks/use-toast";
 import WalletPage from "./WalletPage";
 import NearbyPage from "./NearbyPage";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_URL = import.meta.env.VITE_API_URL?.includes("localhost")
+  ? `${window.location.protocol}//${window.location.hostname}:4000`
+  : (import.meta.env.VITE_API_URL || "http://localhost:4000");
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function fmt(sec: number) { return `${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`; }

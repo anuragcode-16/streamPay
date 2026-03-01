@@ -29,7 +29,9 @@ import TaxAdvisorChat from "@/components/analytics/TaxAdvisorChat";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_URL = import.meta.env.VITE_API_URL?.includes("localhost")
+  ? `${window.location.protocol}//${window.location.hostname}:4000`
+  : (import.meta.env.VITE_API_URL || "http://localhost:4000");
 const DEMO_MERCHANT_ID = "m_demo_gym001";
 const DEMO_SERVICE_TYPE = "gym";
 const VALID_TYPES = ["gym", "ev", "parking", "coworking", "wifi", "spa", "vending"];
