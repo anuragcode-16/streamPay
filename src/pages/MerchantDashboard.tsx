@@ -523,13 +523,13 @@ export default function MerchantDashboard() {
     <div className="flex min-h-screen bg-background">
       {/* Mobile Header */}
       <div className="md:hidden fixed top-0 w-full z-30 flex items-center justify-between border-b border-border bg-card p-4">
+        <button onClick={() => setMobileMenuOpen(true)} className="p-2 text-foreground">
+          <Menu className="h-6 w-6" />
+        </button>
         <div className="flex items-center gap-2">
           <Zap className="h-5 w-5 text-primary" />
           <span className="font-display font-bold text-lg text-foreground">STREAM<span className="neon-text">PAY</span></span>
         </div>
-        <button onClick={() => setMobileMenuOpen(true)} className="p-2 text-foreground">
-          <Menu className="h-6 w-6" />
-        </button>
       </div>
 
       {/* Mobile Sidebar Overlay */}
