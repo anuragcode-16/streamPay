@@ -522,7 +522,7 @@ export default function MerchantDashboard() {
   return (
     <div className="flex min-h-screen bg-background">
       {/* Mobile Header */}
-      <div className="md:hidden fixed top-0 w-full z-30 flex items-center justify-between border-b border-border bg-card p-4">
+      <div className="md:hidden fixed top-0 w-full z-30 flex items-center justify-start gap-3 border-b border-border bg-card p-4">
         <button onClick={() => setMobileMenuOpen(true)} className="p-2 text-foreground">
           <Menu className="h-6 w-6" />
         </button>
@@ -538,7 +538,7 @@ export default function MerchantDashboard() {
       )}
 
       {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
-      <aside className={`fixed left-0 top-0 z-50 flex h-screen w-64 flex-col border-r border-border bg-card transition-transform duration-300 md:translate-x-0 ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"}`}>
+      <aside className={`fixed left-0 top-0 z-50 flex h-[100dvh] w-64 flex-col border-r border-border bg-card transition-transform duration-300 md:translate-x-0 ${mobileMenuOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="flex items-center justify-between p-6">
           <div className="flex items-center gap-2">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary">
@@ -566,7 +566,7 @@ export default function MerchantDashboard() {
           )}
         </div>
 
-        <nav className="flex-1 space-y-1 px-3 overflow-y-auto">
+        <nav className="flex-1 space-y-1 px-3 overflow-y-auto min-h-0">
           {tabs.map(t => (
             <button key={t.id} onClick={() => { setTab(t.id); setMobileMenuOpen(false); }}
               className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${tab === t.id ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}>
@@ -580,7 +580,7 @@ export default function MerchantDashboard() {
           ))}
         </nav>
 
-        <div className="border-t border-border p-4">
+        <div className="border-t border-border p-4 mt-auto">
           <button onClick={async () => { await signOut(); navigate("/"); }}
             className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
             <LogOut className="h-4 w-4" />Logout
