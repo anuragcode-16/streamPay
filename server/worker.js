@@ -72,12 +72,12 @@ async function processSessionDb(session) {
             [debitPaise, user_id]
         );
         if (walletRes.rowCount === 0) {
-            await client.query("UPDATE sessions SET status='paused_low_balance' WHERE id=$1", [session_id]);
+            await client.query("UPDATE sessions SET status='terminated_low_balance' WHERE id=$1", [session_id]);
             await client.query("COMMIT");
             if (io) {
                 const payload = { sessionId: session_id, reason: "insufficient_funds" };
-                io.to(`merchant:${merchant_id}`).emit("session:paused", payload);
-                io.to(`user:${user_id}`).emit("session:paused", payload);
+                io.to(`merchant:${merchant_id}`).emit("session:force_terminated", payload);
+                io.to(`user:${user_id}`).emit("session:force_terminated", payload);
             }
             return;
         }
@@ -128,11 +128,11 @@ function processSesionMem(session) {
     const updatedWallet = memStore.debitWallet(user_id, debitPaise);
     if (!updatedWallet) {
         // Insufficient funds — pause session
-        session.status = "paused_low_balance";
+        session.status = "terminated_low_balance";
         if (io) {
             const payload = { sessionId: session_id, reason: "insufficient_funds" };
-            io.to(`merchant:${merchant_id}`).emit("session:paused", payload);
-            io.to(`user:${user_id}`).emit("session:paused", payload);
+            io.to(`merchant:${merchant_id}`).emit("session:force_terminated", payload);
+            io.to(`user:${user_id}`).emit("session:force_terminated", payload);
         }
         return;
     }

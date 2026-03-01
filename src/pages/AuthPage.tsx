@@ -8,7 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 const AuthPage = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { signUp, signIn, user, role } = useAuth();
+  const { signUp, signIn, signInAsDemo, user, role } = useAuth();
   const { toast } = useToast();
   const initialMode = searchParams.get("mode") === "signup" ? "signup" : "login";
   const initialRole = searchParams.get("role") === "merchant" ? "merchant" : "customer";
@@ -204,6 +204,23 @@ const AuthPage = () => {
               </>
             )}
           </p>
+
+          {mode === "login" && selectedRole === "merchant" && (
+            <div className="mt-4">
+              <div className="relative mb-4">
+                <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border" /></div>
+                <div className="relative flex justify-center"><span className="bg-card px-3 text-xs text-muted-foreground">or</span></div>
+              </div>
+              <button
+                onClick={() => {
+                  signInAsDemo("merchant");
+                  navigate("/merchant");
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-3 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all">
+                <Zap className="h-4 w-4" />Try Demo Account
+              </button>
+            </div>
+          )}
         </div>
       </motion.div>
     </div>

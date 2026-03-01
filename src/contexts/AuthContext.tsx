@@ -12,6 +12,7 @@ interface AuthContextType {
   loading: boolean;
   signUp: (email: string, password: string, role: "merchant" | "customer", displayName: string) => Promise<{ error: any }>;
   signIn: (email: string, password: string) => Promise<{ data: any; error: any }>;
+  signInAsDemo: (role: "merchant" | "customer") => void;
   signOut: () => Promise<void>;
 }
 
@@ -127,6 +128,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     return result;
   };
 
+  const signInAsDemo = (demoRole: "merchant" | "customer") => {
+    const fakeUserId = demoRole === "merchant" ? "user_demo_merchant" : "user_demo_customer";
+    setUser({ id: fakeUserId, email: `demo@streampay.${demoRole}` } as User);
+    setRole(demoRole);
+    setSession({ user: { id: fakeUserId } } as any);
+
+    // Seed demo merchant id instantly if applicable so onboarding skips
+    if (demoRole === "merchant") {
+      localStorage.setItem(`merchant_id_${fakeUserId}`, "m_demo_gym001");
+      localStorage.setItem(`merchant_name_${fakeUserId}`, "PowerZone Gym (Demo)");
+    }
+    setLoading(false);
+  };
+
   const signOut = async () => {
     await supabase.auth.signOut();
     setUser(null);
@@ -136,7 +151,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, role, profile, loading, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, session, role, profile, loading, signUp, signIn, signInAsDemo, signOut }}>
       {children}
     </AuthContext.Provider>
   );

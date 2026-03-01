@@ -35,7 +35,7 @@ function rupee(p: number) { return `₹${(p / 100).toFixed(2)}`; }
 
 const SVC = (t: string) => ({ gym: "🏋️", ev: "⚡", parking: "🅿️", coworking: "💼", wifi: "📶", spa: "🧖", vending: "🤖" }[t] || "🔌");
 
-type SessionStatus = "active" | "paused_low_balance" | "stopped" | "paid";
+type SessionStatus = "active" | "paused_low_balance" | "terminated_low_balance" | "stopped" | "paid";
 
 interface SessionRow {
   id: string;
@@ -75,7 +75,7 @@ export default function CustomerDashboard() {
   const userId = user?.id || "user_demo_customer";
 
   // Derived: active session (most recent active or paused)
-  const activeSessions = [...sessionMap.values()].filter(s => s.status === "active" || s.status === "paused_low_balance");
+  const activeSessions = [...sessionMap.values()].filter(s => s.status === "active" || s.status === "paused_low_balance" || s.status === "terminated_low_balance");
   const activeSession = activeSessions[0] ?? null;
   const allLiveSessions = [...sessionMap.values()].sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
 
@@ -176,6 +176,12 @@ export default function CustomerDashboard() {
     socket.on("session:paused", ({ sessionId }: any) => {
       updateSession(sessionId, { status: "paused_low_balance" });
       toast({ title: "⚠️ Session Paused — Wallet Low", variant: "destructive" });
+    });
+
+    // Session FORCE TERMINATED (Zero Balance)
+    socket.on("session:force_terminated", ({ sessionId }: any) => {
+      updateSession(sessionId, { status: "terminated_low_balance" });
+      toast({ title: "🛑 SESSION TERMINATED: ZERO BALANCE", description: "You have been disconnected from the service. Please pay the remaining balance.", variant: "destructive" });
     });
 
     // Session STOPPED → auto pay from wallet
@@ -421,7 +427,8 @@ export default function CustomerDashboard() {
                     <div className="flex items-center justify-between mb-4">
                       <div>
                         <p className="text-sm text-muted-foreground">
-                          {activeSession.status === "active" ? "🟢 Live Session" : "⚠️ Session Paused"}
+                          {activeSession.status === "active" ? "🟢 Live Session" :
+                            activeSession.status === "terminated_low_balance" ? "🚨 KICKED - ZERO BALANCE" : "⚠️ Session Paused"}
                         </p>
                         <p className="font-display text-xl font-bold">
                           {SVC(activeSession.serviceType)} {activeSession.merchantName}
@@ -472,6 +479,16 @@ export default function CustomerDashboard() {
                         <AlertTriangle className="h-4 w-4" />
                         Balance too low — top up or scan STOP QR to end
                       </div>
+                    )}
+
+                    {activeSession.status === "terminated_low_balance" && (
+                      <motion.div initial={{ scale: 0.95 }} animate={{ scale: 1 }} className="mb-4 flex flex-col gap-2 rounded-xl bg-destructive/10 border-2 border-destructive px-4 py-3 text-sm text-destructive font-bold">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="h-5 w-5 animate-pulse" />
+                          <span>SERVICE DISCONNECTED — ZERO BALANCE</span>
+                        </div>
+                        <p className="text-xs font-medium opacity-90">Please scan the STOP QR code to settle your final invoice.</p>
+                      </motion.div>
                     )}
 
                     <button onClick={() => navigate("/scan")}
@@ -544,7 +561,7 @@ export default function CustomerDashboard() {
                     const elapsed = s.elapsedSec ?? 0;
                     const paidStatus = s.paymentStatus ?? s.payment_status ?? "pending";
                     const sessionStatus = s.status ?? "stopped";
-                    const isLive = sessionStatus === "active" || sessionStatus === "paused_low_balance";
+                    const isLive = sessionStatus === "active" || sessionStatus === "paused_low_balance" || sessionStatus === "terminated_low_balance";
 
                     return (
                       <motion.div key={id}
@@ -588,6 +605,11 @@ export default function CustomerDashboard() {
                             {isLive && sessionStatus === "active" && (
                               <span className="flex items-center gap-1 text-xs text-primary">
                                 <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />Live
+                              </span>
+                            )}
+                            {sessionStatus === "terminated_low_balance" && (
+                              <span className="flex items-center gap-1 text-xs text-destructive font-bold">
+                                <AlertTriangle className="h-3 w-3" />Kicked (₹0)
                               </span>
                             )}
                             {sessionStatus === "paused_low_balance" && (

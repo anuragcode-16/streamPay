@@ -46,7 +46,7 @@ interface LiveSession {
   sessionId: string; userId: string; merchantId: string;
   merchantName: string; serviceType: string; startedAt: string;
   pricePerMinutePaise: number; elapsedSec: number;
-  totalDebitedPaise: number; status: "active" | "paused_low_balance" | "stopped" | "paid";
+  totalDebitedPaise: number; status: "active" | "paused_low_balance" | "terminated_low_balance" | "stopped" | "paid";
   paymentId?: string;
 }
 
@@ -129,6 +129,15 @@ export default function MerchantDashboard() {
         if (s) m.set(sessionId, { ...s, status: "paused_low_balance" });
         return m;
       });
+    });
+
+    socket.on("session:force_terminated", ({ sessionId }: any) => {
+      setLiveSessions(prev => {
+        const m = new Map(prev); const s = m.get(sessionId);
+        if (s) m.set(sessionId, { ...s, status: "terminated_low_balance" });
+        return m;
+      });
+      toast({ title: "🛑 SESSION TERMINATED", description: `A user ran out of funds and was kicked.`, variant: "destructive" });
     });
 
     socket.on("session:stop", ({ sessionId }: any) => {
@@ -250,14 +259,6 @@ export default function MerchantDashboard() {
     } finally { setRegistering(false); }
   }
 
-  function handleTryDemo() {
-    const demoId = DEMO_MERCHANT_ID;
-    activateMerchant(demoId, "PowerZone Gym (Demo)", {
-      id: demoId, name: "PowerZone Gym (Demo)", service_type: "gym",
-      price_per_minute_paise: 200, location: "Delhi NCR",
-    });
-  }
-
   // ── If still loading profile, show spinner ─────────────────────────────────
   if (loadingProfile) {
     return (
@@ -339,11 +340,6 @@ export default function MerchantDashboard() {
               <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border" /></div>
               <div className="relative flex justify-center"><span className="bg-card px-3 text-xs text-muted-foreground">or</span></div>
             </div>
-
-            <button onClick={handleTryDemo}
-              className="flex w-full items-center justify-center gap-2 rounded-xl border border-border py-3 text-sm font-medium text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all">
-              <Zap className="h-4 w-4" />Try Demo Mode (PowerZone Gym)
-            </button>
 
             <button onClick={async () => { await signOut(); navigate("/"); }}
               className="flex w-full items-center justify-center gap-2 rounded-xl py-2 text-xs text-muted-foreground hover:text-destructive">
@@ -490,6 +486,7 @@ export default function MerchantDashboard() {
   const statusColors: Record<string, string> = {
     active: "text-primary bg-primary/10",
     paused_low_balance: "text-yellow-400 bg-yellow-400/10",
+    terminated_low_balance: "text-destructive bg-destructive/10",
     stopped: "text-muted-foreground bg-muted",
     paid: "text-green-400 bg-green-400/10",
   };
